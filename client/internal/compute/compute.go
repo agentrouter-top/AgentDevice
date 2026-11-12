@@ -1,16 +1,21 @@
 // Package compute is the client side of AgentCompute's compute/v1 "devices" operations (contracts/compute/v1:
-// device.schema.json, openapi.yaml): enrol this computer, report its facts, read the SSH user CA keys, unbind it. Every call carries an
-// identity/v1 token with aud agentcompute; errors are the RFC 9457 problems of contracts/errors/v1, kept whole.
+// device.schema.json, openapi.yaml): enrol this computer, report its facts, read the SSH user CA keys, unbind it. The
+// Bearer of the enrolment is an enrolment code's credential (ParseJoinCode) and of every later call the device key
+// the enrolment answered; on the old path (the device login) every call carries an identity/v1 token with aud
+// agentcompute. Errors are the RFC 9457 problems of contracts/errors/v1, kept whole.
 package compute
 
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -56,6 +61,41 @@ type Network struct {
 type Enrolment struct {
 	Computer Computer `json:"computer"`
 	Network  Network  `json:"network"`
+	// DeviceKey is this device's own key (ckey_…), answered once when the enrolment was made with an enrolment code:
+	// the Bearer of every later call. It reaches this computer's record only. A secret: a file, never a log.
+	DeviceKey string `json:"deviceKey,omitempty"`
+}
+
+// JoinCodePrefix starts every enrolment code (compute/v1 README §7, device.schema.json $defs/code).
+const JoinCodePrefix = "acj1_"
+
+var enrolCredential = regexp.MustCompile(`^cenr_[0-9A-Za-z]{12}_[0-9A-Za-z]{40}$`)
+
+// ParseJoinCode opens an enrolment code: `acj1_` + base64url of "<compute/v1 base URL> <credential>". It returns
+// where to enrol and the one-use credential that is the Bearer of that one POST /v1/devices. Errors never repeat the
+// code. The address must be https (http only for this computer itself, for tests).
+func ParseJoinCode(code string) (baseURL, credential string, err error) {
+	code = strings.TrimSpace(code)
+	if !strings.HasPrefix(code, JoinCodePrefix) {
+		return "", "", fmt.Errorf("this is not an enrolment code: it starts with %s (the whole code, as it was given, is needed)", JoinCodePrefix)
+	}
+	raw, derr := base64.RawURLEncoding.DecodeString(strings.TrimRight(code[len(JoinCodePrefix):], "="))
+	if derr != nil {
+		return "", "", errors.New("the enrolment code is cut or altered (it does not decode); paste the whole code, or ask for a new one")
+	}
+	addr, cred, ok := strings.Cut(string(raw), " ")
+	if !ok || !enrolCredential.MatchString(cred) {
+		return "", "", errors.New("the enrolment code is cut or altered (no credential in it); paste the whole code, or ask for a new one")
+	}
+	u, perr := url.Parse(addr)
+	if perr != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || strings.Trim(u.Path, "/") != "" {
+		return "", "", errors.New("the enrolment code names no usable service address; ask for a new one")
+	}
+	local := u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost" || u.Hostname() == "::1"
+	if u.Scheme != "https" && !(u.Scheme == "http" && local) {
+		return "", "", fmt.Errorf("the enrolment code names the service %s, which is not https; this client does not send a credential there", u.Host)
+	}
+	return u.Scheme + "://" + u.Host, cred, nil
 }
 
 // Problem is the errors/v1 envelope (RFC 9457 plus code, component, operation, target, retryable, next, cause).
@@ -120,6 +160,13 @@ func IsComputerGone(err error) bool {
 	return p.Code == "COMPUTE_COMPUTER_NOT_FOUND" || (p.Code == "" && p.HTTPStatus == http.StatusNotFound)
 }
 
+// IsKeyRefused reports whether compute/v1 refused the Bearer as a key that does not exist (COMPUTE_KEY_INVALID, 401).
+// For a device's own key that means the device was unbound: compute/v1 deletes the key with the computer.
+func IsKeyRefused(err error) bool {
+	var p *Problem
+	return errors.As(err, &p) && p.Code == "COMPUTE_KEY_INVALID"
+}
+
 // Client calls compute/v1 at BaseURL.
 type Client struct {
 	BaseURL string
@@ -180,7 +227,8 @@ func (c *Client) do(ctx context.Context, method, path, token string, headers map
 	return nil
 }
 
-// Enrol is POST /v1/devices (scope device:*:enrol) with an Idempotency-Key, so a retry is the same enrolment.
+// Enrol is POST /v1/devices (scope device:*:enrol) with an Idempotency-Key, so a retry is the same enrolment. token is
+// an enrolment code's credential (the answer then carries DeviceKey) or, on the old path, the login's token.
 func (c *Client) Enrol(ctx context.Context, token, idempotencyKey string, req EnrolRequest) (*Enrolment, error) {
 	var out Enrolment
 	if err := c.do(ctx, http.MethodPost, "/v1/devices", token, map[string]string{"Idempotency-Key": idempotencyKey}, req, &out); err != nil {

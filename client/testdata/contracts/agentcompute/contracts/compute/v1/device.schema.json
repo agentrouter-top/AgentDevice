@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:agentcompute:compute:v1:device",
   "title": "compute/v1 device enrolment (the client's side)",
-  "description": "What the client (AgentDevice) sends and receives when a person installs it: POST /v1/devices. After enrolment the client joins its owner's NetBird network with the answer's `network` and reports facts with PUT /v1/computers/{id}/facts. README.md \"Devices\": contracts/compute/v1/README.md.",
+  "description": "What the client (AgentDevice) sends and receives when a person adds their computer: POST /v1/devices, with an enrolment code's credential (made by POST /v1/enrolment-codes with an account key) or, the old path, the person's own login. After enrolment the client joins its owner's NetBird network with the answer's `network` and reports facts with PUT /v1/computers/{id}/facts. README.md \"Devices\": contracts/compute/v1/README.md.",
   "type": "object",
   "$defs": {
     "enrolRequest": {
@@ -16,7 +16,7 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 64,
-          "description": "The device name the person chose in the client."
+          "description": "The device name the person chose in the client (its default: the computer's own name). An enrolment code made with a `name` decides the name instead."
         },
         "facts": {
           "$ref": "computer.schema.json#/$defs/facts"
@@ -87,19 +87,6 @@
                     }
                   },
                   "additionalProperties": false
-                },
-                {
-                  "type": "object",
-                  "required": [
-                    "method"
-                  ],
-                  "properties": {
-                    "method": {
-                      "const": "jwt",
-                      "description": "Log in with an identity/v1 token, aud netbird (embed Options.JWTToken); NetBird maps it to the owner's account (prototype P1)."
-                    }
-                  },
-                  "additionalProperties": false
                 }
               ]
             },
@@ -116,6 +103,64 @@
             }
           },
           "additionalProperties": false
+        },
+        "deviceKey": {
+          "type": "string",
+          "pattern": "^ckey_[0-9A-Za-z]{12}_[0-9A-Za-z]{40}$",
+          "description": "Only when the enrolment was made with an enrolment code (additive 2026-11-12, AgentCompute#207): the device's own key (key.schema.json scope `device`), answered this once. The client keeps it in a file only its account can read and sends it as its Bearer from then on: it reports this computer's facts, reads the SSH user CA keys and may unbind this computer; it reaches nothing else of the account. It ends when the device is unbound."
+        }
+      },
+      "additionalProperties": false
+    },
+    "codeRequest": {
+      "type": "object",
+      "description": "POST /v1/enrolment-codes: what the code is for. An empty body is the default.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "The name the enrolled computer gets (GET /v1/computers `name`). Without it the client's own name for the computer is used."
+        },
+        "ttlSeconds": {
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 86400,
+          "default": 3600,
+          "description": "How long the code can be used, from now. Default one hour."
+        }
+      },
+      "additionalProperties": false
+    },
+    "code": {
+      "type": "object",
+      "description": "An enrolment code, as its creation answers it. The code text is answered this once; the service keeps only a SHA-256.",
+      "required": [
+        "id",
+        "code",
+        "expiresAt"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^enr_[0-9A-Za-z]{12}$",
+          "description": "The code's id: not a secret; logs and errors name it."
+        },
+        "code": {
+          "type": "string",
+          "pattern": "^acj1_[A-Za-z0-9_-]+$",
+          "minLength": 25,
+          "maxLength": 1024,
+          "description": "The code the person runs the device client with (`agentdevice join <code>`): one opaque string that holds this service's address and a one-use credential for one POST /v1/devices. A secret until it is used or runs out. Give it to the person; never the account key."
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
         }
       },
       "additionalProperties": false

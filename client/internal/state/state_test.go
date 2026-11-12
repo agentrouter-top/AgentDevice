@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -134,5 +135,34 @@ func TestShippedEnvironments(t *testing.T) {
 		if name == "dev" && !complete {
 			t.Errorf("dev must be complete: %v", c.Validate("config.json"))
 		}
+	}
+}
+
+// A device that joined with an enrolment code keeps its own key in an owner-only file; Forget removes it.
+func TestDeviceKeyIsKeptPrivateAndForgotten(t *testing.T) {
+	d := Dir(t.TempDir())
+	if k, err := d.LoadDeviceKey(); err != nil || k != "" {
+		t.Fatalf("no key yet: %q %v", k, err)
+	}
+	if err := d.SaveDeviceKey("ckey_abcdefghijkl_0123456789012345678901234567890123456789"); err != nil {
+		t.Fatal(err)
+	}
+	if k, _ := d.LoadDeviceKey(); k != "ckey_abcdefghijkl_0123456789012345678901234567890123456789" {
+		t.Fatalf("read back %q", k)
+	}
+	if fi, err := os.Stat(d.Path("device_key")); err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600) {
+		t.Fatalf("device_key mode: %v %v", fi, err)
+	}
+	if err := d.SaveDevice(&Device{ComputerID: "cmp_1", Own: "acc_a", ComputeURL: "https://compute.example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	if dev, _ := d.LoadDevice(); dev == nil || dev.ComputeURL != "https://compute.example.com" {
+		t.Fatalf("device.json computeUrl: %+v", dev)
+	}
+	if err := d.Forget(); err != nil {
+		t.Fatal(err)
+	}
+	if k, _ := d.LoadDeviceKey(); k != "" {
+		t.Fatal("the device key outlived Forget")
 	}
 }

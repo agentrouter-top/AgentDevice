@@ -108,7 +108,7 @@
     "resources": {
       "type": "object",
       "required": ["cpu", "memoryGb", "diskGb"],
-      "description": "Limits of the sandbox: what it may burst to (the CPU quota, the memory cgroup cap, the disk quota); metered and held at these. `requests` is what its node admits it by (the Kubernetes requests/limits model, AgentCompute#167). Larger than any node can hold: 409 COMPUTE_SANDBOX_TOO_LARGE (not retryable, the largest size named). No room now on the node for its requests: 503 COMPUTE_SANDBOX_CAPACITY (retryable, Retry-After, asked vs free per resource). Never silently shrunk.",
+      "description": "Limits of the sandbox: what it may burst to (the CPU quota, the memory cgroup cap, the disk quota). `requests` is what its node admits it by (the Kubernetes requests/limits model, AgentCompute#167). Larger than any node can hold: 409 COMPUTE_SANDBOX_TOO_LARGE (not retryable, the largest size named). No room now on the node for its requests: 503 COMPUTE_SANDBOX_CAPACITY (retryable, Retry-After, asked vs free per resource). Never silently shrunk.",
       "properties": {
         "cpu": { "type": "number", "minimum": 0.25, "maximum": 64, "description": "vCPUs." },
         "memoryGb": { "type": "number", "minimum": 0.25, "maximum": 256 },

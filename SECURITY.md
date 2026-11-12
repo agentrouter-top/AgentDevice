@@ -26,7 +26,10 @@ with a 10-minute OpenSSH user certificate of AgentCompute's SSH user CA (signer 
 principal = this computer's id, valid now, no critical option, `own@` = the device's owner), checked by AgentCompute's
 SSH gateway and again on the device; the CA keys come with the enrolment or the join file and are read again at each
 start (`GET /v1/ssh-user-ca`) and on an unknown signer. The former token password (`aud: netbird`) stays only until
-AgentHost moved to certificates (AgentHost#385). The device only executes:
+AgentHost moved to certificates (AgentHost#385). A device that joined with an enrolment code (`agentdevice join`)
+holds no login and no account credential: the code works once and for minutes, and what stays on the device is its
+own device key (an owner-only file), which reports this computer's facts and can remove this computer, nothing else
+of the account; removing the device ends the key. The device only executes:
 no MCP, no tools of its own; a session runs as the client's account on the whole computer (R58); forwarding reaches
 loopback only. Command text travels through owner-only files read by a fixed runner (R21); process trees end with the
 session. Builds are currently unsigned (ADR 0001).
