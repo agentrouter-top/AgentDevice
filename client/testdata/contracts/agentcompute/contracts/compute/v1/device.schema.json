@@ -148,7 +148,9 @@
         },
         "code": {
           "type": "string",
-          "pattern": "^acj1_[A-Za-z0-9_-]{20,1024}$",
+          "pattern": "^acj1_[A-Za-z0-9_-]+$",
+          "minLength": 25,
+          "maxLength": 1024,
           "description": "The code the person runs the device client with (`agentdevice join <code>`): one opaque string that holds this service's address and a one-use credential for one POST /v1/devices. A secret until it is used or runs out. Give it to the person; never the account key."
         },
         "expiresAt": {
