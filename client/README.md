@@ -8,7 +8,7 @@ placement or environments (AgentCompute, AgentHost). Why our own SSH server: [AD
 
 **Interfaces**: consumes identity/v1 (AgentIdentity "Device login": RFC 8628 at ZITADEL, confirmed on Login v2's
 `/ui/v2/login/device`, then each short token = exchange at the STS, `aud` agentcompute or netbird; STS JWKS for SSH) and
-compute/v1 (`POST /v1/devices`, `PUT /v1/computers/{id}/facts`, `DELETE /v1/devices/{id}`; sandbox join file, §7.1);
+compute/v1 (`POST /v1/devices`, `PUT /v1/computers/{id}/facts`, `GET /v1/ssh-user-ca`, `DELETE /v1/devices/{id}`; sandbox join file, §7.1);
 provides SSH on the NetBird address, port 22 (vendored, sha256: `testdata/contracts/`). **Endpoints**: `environment.json`
 beside the program (the installer's environment, [release/](../release/README.md)), then `config.json` over it. **Login**:
 `zitadel {url, projectId, clientId}` + `issuer` = STS (`exchangeUrl` default `<issuer>/v1/identity/exchange`; unbind
@@ -20,7 +20,7 @@ revokes at ZITADEL); without it NewAPI's `/v1/identity/device/*` (legacy, delete
 | `internal/app` | the flow: login → enrol → join → SSH + facts + tray state; `sandbox.go`: a sandbox, headless (below) |
 | `internal/egress` | relays NetBird's TLS by SNI through an HTTP CONNECT proxy ([ADR 0003](../docs/adr/0003-sandbox-egress-relay.md)) |
 | `internal/network` | embed v0.82.0, NetBird's SSH server off; skips NetBird's slow static-info probes (Windows 20 s) |
-| `internal/sshd` | exec, terminal (ConPTY / PTY), SFTP, loopback-only forwarding; token auth; command text via files (R21) |
+| `internal/sshd` | exec, terminal (ConPTY / PTY), SFTP, loopback-only forwarding; logins by AgentCompute SSH user certificates (`certs.go`: trusted signer, one principal = the computer, validity, no critical option, `own@`/`ten@`; CA keys from the enrolment / join file, `GET /v1/ssh-user-ca` at each start and on an unknown signer); the former token password only in `legacy_token.go` until AgentHost#385; command text via files (R21) |
 | `internal/identity` | ES256 verifier (contract vectors; account ids are the contract's one pattern, identity/v1 1.1.0 `acc_[0-9A-Za-z_-]{1,64}`, tested against the vendored schema), JWKS cache; device login: keeps only the newest refresh token (stored before use, one refresh at a time), ZITADEL's access token in memory only, short tokens per audience (exchanged at the STS; an `invalid_grant` there refreshes once and exchanges again; a refused refresh = removed device) |
 | `internal/compute` | compute/v1 client; RFC 9457 problems kept whole |
 | `internal/facts` | os, arch, shell, cpu, memory, gpu, software; no WMI, no admin |

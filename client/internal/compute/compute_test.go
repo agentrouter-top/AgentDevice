@@ -131,7 +131,8 @@ func TestEnrolSendsTheContractRequestAndReadsTheEnrolment(t *testing.T) {
 		},
 		"network": map[string]any{
 			"managementUrl": "https://netbird.test", "deviceName": "cmp_test1",
-			"join": map[string]any{"method": "setup-key", "setupKey": "TEST-ONLY-setup-key"},
+			"join":          map[string]any{"method": "setup-key", "setupKey": "TEST-ONLY-setup-key"},
+			"sshUserCAKeys": []string{testCAKey},
 		},
 	}
 	validate(t, answerSchema, answer)
@@ -170,8 +171,31 @@ func TestEnrolSendsTheContractRequestAndReadsTheEnrolment(t *testing.T) {
 	if gotKey != "idem-1" || gotAuth != "Bearer tok" {
 		t.Fatalf("headers: Idempotency-Key %q, Authorization %q", gotKey, gotAuth)
 	}
-	if en.Computer.ID != "cmp_test1" || en.Computer.Own != "acc_2002" || en.Network.Join.SetupKey != "TEST-ONLY-setup-key" {
+	if en.Computer.ID != "cmp_test1" || en.Computer.Own != "acc_2002" || en.Network.Join.SetupKey != "TEST-ONLY-setup-key" ||
+		len(en.Network.SSHUserCAKeys) != 1 || en.Network.SSHUserCAKeys[0] != testCAKey {
 		t.Fatalf("enrolment %+v", en)
+	}
+}
+
+// testCAKey is an authorized_keys line of an ed25519 key (the shape of compute/v1 sshUserCAKeys; a throwaway test key).
+const testCAKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBzyRbqajE55vH7MFrTXIcWIWPw67W6UwOxppjMI6hvm agentcompute-ssh-user-ca"
+
+// GET /v1/ssh-user-ca with the client's own token answers the trusted keys.
+func TestSSHUserCA(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/ssh-user-ca" {
+			http.NotFound(w, r)
+			return
+		}
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"keys":[%q]}`, testCAKey)
+	}))
+	defer srv.Close()
+	keys, err := (&Client{BaseURL: srv.URL}).SSHUserCA(context.Background(), "tok")
+	if err != nil || len(keys) != 1 || keys[0] != testCAKey || gotAuth != "Bearer tok" {
+		t.Fatalf("keys %v err %v auth %q", keys, err, gotAuth)
 	}
 }
 

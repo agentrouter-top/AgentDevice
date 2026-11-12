@@ -16,6 +16,10 @@
     "holder": {
       "$ref": "#/$defs/holderId",
       "description": "Optional first hold, as PUT /v1/sandboxes/{id}/holds/{holder} with the default ttl."
+    },
+    "network": {
+      "$ref": "network.schema.json#/$defs/network",
+      "description": "Optional (2026-11-06, additive, AgentCompute#67): the hosts commands in the sandbox may reach. Absent: every public host (as before). It applies once the sandbox is started (the spec's installs run before it); PATCH /v1/computers/{id}/network changes it later. README \"Egress\"."
     }
   },
   "additionalProperties": false,
@@ -104,11 +108,21 @@
     "resources": {
       "type": "object",
       "required": ["cpu", "memoryGb", "diskGb"],
-      "description": "Limits of the sandbox. A request the provider cannot place is refused with the facts that fail (COMPUTE_SANDBOX_CAPACITY), never silently shrunk.",
+      "description": "Limits of the sandbox: what it may burst to (the CPU quota, the memory cgroup cap, the disk quota); metered and held at these. `requests` is what its node admits it by (the Kubernetes requests/limits model, AgentCompute#167). Larger than any node can hold: 409 COMPUTE_SANDBOX_TOO_LARGE (not retryable, the largest size named). No room now on the node for its requests: 503 COMPUTE_SANDBOX_CAPACITY (retryable, Retry-After, asked vs free per resource). Never silently shrunk.",
       "properties": {
         "cpu": { "type": "number", "minimum": 0.25, "maximum": 64, "description": "vCPUs." },
         "memoryGb": { "type": "number", "minimum": 0.25, "maximum": 256 },
         "diskGb": { "type": "number", "minimum": 1, "maximum": 2048 },
+        "requests": {
+          "type": "object",
+          "description": "What admission counts on the node (2026-11-08, additive, AgentCompute#167): typical use, each at most its limit (above it: COMPUTE_REQUEST_INVALID). A field left out is the node's default request (from measured use), never more than the limit. A sleeping sandbox counts only its disk request; a failed one nothing. Answered with the defaults filled in.",
+          "properties": {
+            "cpu": { "type": "number", "minimum": 0.01, "maximum": 64 },
+            "memoryGb": { "type": "number", "minimum": 0.01, "maximum": 256 },
+            "diskGb": { "type": "number", "minimum": 0.01, "maximum": 2048 }
+          },
+          "additionalProperties": false
+        },
         "gpu": {
           "type": "object",
           "required": ["count"],

@@ -2,7 +2,8 @@
 // gliderlabs/ssh) with a real terminal (ConPTY through charmbracelet/x/conpty on Windows, a Unix PTY elsewhere),
 // pkg/sftp (BSD-2) in-process, and local port forwarding to services on this computer. It listens on the device's
 // NetBird address only. Every session runs as the account the client runs as, on the whole computer (R58): no user
-// switching, no administrator rights. The password is an identity/v1 token (Authorizer).
+// switching, no administrator rights. A login is an AgentCompute SSH user certificate (certs.go); the former token
+// password (legacy_token.go) stays until AgentHost moved (AgentHost#385).
 package sshd
 
 import (
@@ -22,13 +23,15 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 
 	"github.com/agentrouter-top/AgentDevice/client/internal/facts"
-	"github.com/agentrouter-top/AgentDevice/client/internal/identity"
 	"github.com/pkg/sftp"
 )
 
 // Config is the server's setup.
 type Config struct {
-	HostKey    gossh.Signer
+	HostKey gossh.Signer
+	// Certificates checks certificate logins (compute/v1 README §3).
+	Certificates *CertAuthority
+	// Authorizer, when set, also takes the former token password. LEGACY: delete with legacy_token.go (AgentHost#385).
 	Authorizer *Authorizer
 	Shell      facts.UserShellInfo
 	// BaseEnv is the environment commands start with (on Unix the account's login environment; see LoginEnv).
@@ -41,8 +44,6 @@ type Config struct {
 	Activity func(Activity)
 }
 
-type claimsKey struct{}
-
 // Server is one SSH server; Serve may be called again with a new listener after the network restarts.
 type Server struct {
 	cfg Config
@@ -51,8 +52,11 @@ type Server struct {
 
 // New builds the server.
 func New(cfg Config) (*Server, error) {
-	if cfg.HostKey == nil || cfg.Authorizer == nil {
-		return nil, errors.New("sshd: host key and authorizer are required")
+	if cfg.HostKey == nil || cfg.Certificates == nil || cfg.Certificates.Keys == nil {
+		return nil, errors.New("sshd: a host key and the certificate authority are required")
+	}
+	if cfg.Certificates.ComputerID == "" || cfg.Certificates.Own == "" {
+		return nil, errors.New("sshd: the certificate authority needs this computer's id and owner")
 	}
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
@@ -68,13 +72,16 @@ func New(cfg Config) (*Server, error) {
 		Version:                     "AgentDevice_" + strings.ReplaceAll(cfg.Version, " ", "_"),
 		HandshakeTimeout:            30 * time.Second,
 		Handler:                     s.handleSession,
-		PasswordHandler:             s.password,
+		PublicKeyHandler:            s.publicKey,
 		LocalPortForwardingCallback: s.allowForward,
 		ChannelHandlers: map[string]ssh.ChannelHandler{
 			"session":      ssh.DefaultSessionHandler,
 			"direct-tcpip": ssh.DirectTCPIPHandler,
 		},
 		SubsystemHandlers: map[string]ssh.SubsystemHandler{"sftp": s.handleSFTP},
+	}
+	if cfg.Authorizer != nil {
+		srv.PasswordHandler = s.legacyPassword // LEGACY (legacy_token.go)
 	}
 	srv.AddHostKey(cfg.HostKey)
 	if err := srv.SetOption(ssh.AllocatePty()); err != nil {
@@ -95,18 +102,6 @@ func (s *Server) Serve(ln net.Listener) error {
 
 // Close stops the server and its connections.
 func (s *Server) Close() error { return s.srv.Close() }
-
-// password authenticates with the token; the token itself is never logged.
-func (s *Server) password(ctx ssh.Context, password string) bool {
-	c, err := s.cfg.Authorizer.Authorize(ctx, password)
-	if err != nil {
-		s.cfg.Log.Warn("ssh auth denied", "remote", ctx.RemoteAddr().String(), "user", ctx.User(), "check", identity.Check(err), "error", err.Error())
-		return false
-	}
-	ctx.SetValue(claimsKey{}, c)
-	s.cfg.Log.Info("ssh auth granted", "remote", ctx.RemoteAddr().String(), "user", ctx.User(), "sub", c.Sub, "run", c.Run, "jti", c.Jti)
-	return true
-}
 
 // allowForward allows direct-tcpip (local forwarding, `ssh -L`) only to services on this computer itself: loopback
 // addresses and localhost. That is how a named endpoint (compute/v1 endpoints) reaches the program behind it; the
@@ -167,8 +162,11 @@ func (s *Server) handleSession(sess ssh.Session) {
 	raw := sess.RawCommand()
 	ptyReq, _, isPty := sess.Pty()
 	log := s.cfg.Log.With("remote", sess.RemoteAddr().String(), "pty", isPty)
-	if c, ok := sess.Context().Value(claimsKey{}).(*identity.Claims); ok {
-		log = log.With("sub", c.Sub, "run", c.Run)
+	if c := callerOf(sess.Context()); c != nil {
+		log = log.With("method", c.Method, "own", c.Own, "sub", c.Sub, "run", c.Run)
+		if c.Method == "certificate" {
+			log = log.With("serial", c.Serial, "keyId", c.KeyID)
+		}
 	}
 	file := ""
 	if raw != "" {

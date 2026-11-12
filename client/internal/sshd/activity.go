@@ -5,17 +5,15 @@ import (
 	"time"
 
 	"charm.land/ssh"
-
-	"github.com/agentrouter-top/AgentDevice/client/internal/identity"
 )
 
 // Activity is one thing an Agent did on this computer, for the client's visible activity log: a command (exec), a
-// terminal, an SFTP session or a forward. It carries no token and only the command's first line.
+// terminal, an SFTP session or a forward. It carries no credential and only the command's first line.
 type Activity struct {
 	Time    time.Time
 	Kind    string // exec | terminal | sftp | forward
-	Sub     string // who: the token's sub (svc_agenthost, acc_…)
-	Run     string // which conversation, when the token names one
+	Sub     string // who: the certificate's (or token's) sub (svc_agenthost, acc_…, prv_…)
+	Run     string // which conversation, when the credential names one
 	Command string // first line of the command, at most 80 characters ("" for an interactive shell)
 	Target  string // forward: host:port
 	Allowed bool   // forward: allowed or refused
@@ -27,7 +25,7 @@ func (s *Server) report(ctx ssh.Context, a Activity) {
 	if s.cfg.Activity == nil {
 		return
 	}
-	if c, ok := ctx.Value(claimsKey{}).(*identity.Claims); ok {
+	if c := callerOf(ctx); c != nil {
 		a.Sub, a.Run = c.Sub, c.Run
 	}
 	if a.Time.IsZero() {

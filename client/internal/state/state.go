@@ -207,6 +207,9 @@ type Device struct {
 	JoinMethod    string    `json:"joinMethod"`
 	Joined        bool      `json:"joined"`
 	EnrolledAt    time.Time `json:"enrolledAt"`
+	// SSHUserCAKeys are the SSH user CA keys the SSH server trusts (compute/v1 sshUserCAKeys): from the enrolment
+	// answer or the join file, replaced by GET /v1/ssh-user-ca at each start.
+	SSHUserCAKeys []string `json:"sshUserCAKeys,omitempty"`
 }
 
 // LoadDevice reads device.json; nil, nil when the device is not enrolled.

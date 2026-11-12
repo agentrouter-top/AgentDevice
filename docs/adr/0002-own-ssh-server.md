@@ -25,6 +25,10 @@ filtered standard token.
 - The password is an identity/v1 token: `aud: netbird`, `scp` covering `computer:<this id>:ssh`, `own` equal to the
   device's owner, `iat` at most 600 s old. The device enforces the scope itself (NetBird's server checks only `sub`);
   AgentCompute's gateway checks it too.
+  **Superseded 2026-11-11** (owner on AgentCompute#179 「ssh用证书方案，按你推荐的来」; #253): a login is an OpenSSH user
+  certificate of AgentCompute's SSH user CA (`client/internal/sshd/certs.go`, x/crypto/ssh): signer one of the
+  trusted CA keys, one principal = this computer's id, valid now, no critical option, `own@` = the owner, `ten@` = the
+  tenant when known. The token password stays in `legacy_token.go` only until AgentHost moved (AgentHost#385).
 - Port forwarding: local (`direct-tcpip`) to the computer's own loopback services only, which is how a named endpoint
   reaches its program; no remote forwarding, no agent forwarding.
 - The host key is the client's (Ed25519, made at first start) and is reported at enrolment (`hostKey`, AgentCompute

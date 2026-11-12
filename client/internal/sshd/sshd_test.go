@@ -2,15 +2,12 @@ package sshd
 
 import (
 	"bytes"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"encoding/base64"
-	"encoding/json"
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"math/big"
 	"net"
 	"os"
 	"path/filepath"
@@ -20,118 +17,82 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/pkg/sftp"
 	gossh "golang.org/x/crypto/ssh"
 
 	"github.com/agentrouter-top/AgentDevice/client/internal/facts"
-	"github.com/agentrouter-top/AgentDevice/client/internal/identity"
 	"github.com/agentrouter-top/AgentDevice/client/internal/state"
 )
 
-// The tests sign tokens with identity/v1's published TEST-ONLY key and run the real server on a loopback listener
-// (the NetBird listener is a net.Listener too). They run on GitHub-hosted Linux, macOS and Windows runners (R47).
+// The tests log in with certificates of a test SSH user CA made per test (as AgentCompute's CA writes them,
+// ssh-gateway/internal/ca) and run the real server on a loopback listener (the NetBird listener is a net.Listener too).
+// They run on GitHub-hosted Linux, macOS and Windows runners (R47).
 
 const (
-	testIssuer   = "https://newapi.test"
 	testComputer = "cmp_test1"
 	testOwner    = "acc_2002"
+	testTenant   = "acc_1001"
 )
-
-var vectors = filepath.Join("..", "..", "testdata", "contracts", "agentidentity", "contracts", "identity", "v1", "vectors")
-
-func testKey(t *testing.T) (*ecdsa.PrivateKey, identity.StaticKeys) {
-	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(vectors, "TEST-ONLY-private-keys.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var set struct {
-		Keys []struct{ Kid, X, Y, D string } `json:"keys"`
-	}
-	if err := json.Unmarshal(raw, &set); err != nil {
-		t.Fatal(err)
-	}
-	k := set.Keys[0]
-	dec := func(s string) *big.Int {
-		b, err := base64.RawURLEncoding.DecodeString(s)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return new(big.Int).SetBytes(b)
-	}
-	priv := &ecdsa.PrivateKey{PublicKey: ecdsa.PublicKey{Curve: elliptic.P256(), X: dec(k.X), Y: dec(k.Y)}, D: dec(k.D)}
-	jwks, err := os.ReadFile(filepath.Join(vectors, "TEST-ONLY-jwks.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	keys, err := identity.ParseJWKS(jwks)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if k.Kid != "test-2026-11-a" {
-		t.Fatalf("first test key is %s", k.Kid)
-	}
-	return priv, keys
-}
-
-type claims map[string]any
-
-func mint(t *testing.T, priv *ecdsa.PrivateKey, edit func(claims)) string {
-	t.Helper()
-	now := time.Now().Unix()
-	c := claims{
-		"iss": testIssuer, "sub": "svc_agenthost", "ten": "acc_1001", "own": testOwner, "pay": testOwner,
-		"aud": "netbird", "scp": []string{"computer:" + testComputer + ":ssh"}, "run": "cnv_test1",
-		"iat": now, "exp": now + 600, "jti": "0b6f2c1e-6a51-4c7e-9a43-1f0f6b9d2a01",
-	}
-	if edit != nil {
-		edit(c)
-	}
-	tok := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims(c))
-	tok.Header["typ"] = "at+jwt"
-	tok.Header["kid"] = "test-2026-11-a"
-	s, err := tok.SignedString(priv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return s
-}
 
 type harness struct {
 	acts    chan Activity
 	addr    string
 	hostKey gossh.PublicKey
 	home    string
-	priv    *ecdsa.PrivateKey
+	ca      gossh.Signer
 }
 
-func start(t *testing.T) *harness {
+func newSigner(t *testing.T) gossh.Signer {
 	t.Helper()
-	priv, keys := testKey(t)
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := gossh.NewSignerFromKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func authorizedKey(k gossh.PublicKey) string {
+	return strings.TrimSpace(string(gossh.MarshalAuthorizedKey(k)))
+}
+
+func start(t *testing.T) *harness { return startWith(t, nil) }
+
+// startWith runs the server; edit changes its configuration first.
+func startWith(t *testing.T, edit func(*Config)) *harness {
+	t.Helper()
 	signer, _, err := state.Dir(t.TempDir()).HostKey()
 	if err != nil {
 		t.Fatal(err)
 	}
+	ca := newSigner(t)
+	keys := &CAKeys{}
+	if err := keys.Set([]string{authorizedKey(ca.PublicKey())}); err != nil {
+		t.Fatal(err)
+	}
 	home := t.TempDir()
 	acts := make(chan Activity, 64)
-	srv, err := New(Config{
+	cfg := Config{
 		Activity: func(a Activity) {
 			select {
 			case acts <- a:
 			default:
 			}
 		},
-		HostKey: signer,
-		Authorizer: &Authorizer{
-			Verifier:   &identity.Verifier{Issuer: testIssuer, Keys: keys},
-			ComputerID: testComputer, Own: testOwner, Ten: "acc_1001", MaxAge: 600 * time.Second,
-		},
-		Shell:   facts.UserShell(),
-		Home:    home,
-		Version: "test",
-		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
-	})
+		HostKey:      signer,
+		Certificates: &CertAuthority{Keys: keys, ComputerID: testComputer, Own: testOwner, Ten: testTenant},
+		Shell:        facts.UserShell(),
+		Home:         home,
+		Version:      "test",
+		Log:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	if edit != nil {
+		edit(&cfg)
+	}
+	srv, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,22 +102,59 @@ func start(t *testing.T) *harness {
 	}
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() { _ = srv.Close() })
-	return &harness{acts: acts, addr: ln.Addr().String(), hostKey: signer.PublicKey(), home: home, priv: priv}
+	return &harness{acts: acts, addr: ln.Addr().String(), hostKey: signer.PublicKey(), home: home, ca: ca}
 }
 
-func (h *harness) dial(t *testing.T, token string) (*gossh.Client, error) {
+// certificate is a user certificate for a new key, as POST /v1/computers/{id}/access issues it, signed by ca after
+// edit changed it.
+func certificate(t *testing.T, ca gossh.Signer, edit func(*gossh.Certificate)) (*gossh.Certificate, gossh.Signer) {
+	t.Helper()
+	key := newSigner(t)
+	now := time.Now()
+	cert := &gossh.Certificate{
+		Key: key.PublicKey(), Serial: 4242, CertType: gossh.UserCert,
+		KeyId:           testComputer + " own=" + testOwner + " sub=svc_agenthost jti=j1 run=cnv_test1",
+		ValidPrincipals: []string{testComputer},
+		ValidAfter:      uint64(now.Add(-30 * time.Second).Unix()), ValidBefore: uint64(now.Add(10 * time.Minute).Unix()),
+		Permissions: gossh.Permissions{Extensions: map[string]string{
+			"permit-pty": "", "permit-port-forwarding": "",
+			ExtOwn: testOwner, ExtTen: testTenant, "pay@agentcompute.agentrouter.top": testOwner, ExtSub: "svc_agenthost",
+			ExtJti: "j1", ExtRun: "cnv_test1", "iat@agentcompute.agentrouter.top": fmt.Sprint(now.Unix()),
+		}},
+	}
+	if edit != nil {
+		edit(cert)
+	}
+	if err := cert.SignCert(rand.Reader, ca); err != nil {
+		t.Fatal(err)
+	}
+	signer, err := gossh.NewCertSigner(cert, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cert, signer
+}
+
+func (h *harness) dialWith(t *testing.T, auth ...gossh.AuthMethod) (*gossh.Client, error) {
 	t.Helper()
 	return gossh.Dial("tcp", h.addr, &gossh.ClientConfig{
 		User:            "anyone",
-		Auth:            []gossh.AuthMethod{gossh.Password(token)},
+		Auth:            auth,
 		HostKeyCallback: gossh.FixedHostKey(h.hostKey),
 		Timeout:         15 * time.Second,
 	})
 }
 
+// dialCert logs in with a certificate of the harness's CA, changed by edit.
+func (h *harness) dialCert(t *testing.T, edit func(*gossh.Certificate)) (*gossh.Client, error) {
+	t.Helper()
+	_, signer := certificate(t, h.ca, edit)
+	return h.dialWith(t, gossh.PublicKeys(signer))
+}
+
 func (h *harness) client(t *testing.T) *gossh.Client {
 	t.Helper()
-	c, err := h.dial(t, mint(t, h.priv, nil))
+	c, err := h.dialCert(t, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,48 +191,6 @@ func pick(unix, ps string) string {
 		return ps
 	}
 	return unix
-}
-
-func TestAuthAcceptsOnlyThisDevicesOwnerWithTheSSHScope(t *testing.T) {
-	h := start(t)
-	if _, err := h.dial(t, mint(t, h.priv, nil)); err != nil {
-		t.Fatalf("valid token refused: %v", err)
-	}
-	cases := map[string]func(claims){
-		"another owner":    func(c claims) { c["own"] = "acc_9999" },
-		"another tenant":   func(c claims) { c["ten"] = "acc_9998" },
-		"another computer": func(c claims) { c["scp"] = []string{"computer:cmp_other:ssh"} },
-		"another right":    func(c claims) { c["scp"] = []string{"computer:" + testComputer + ":read"} },
-		"another audience": func(c claims) { c["aud"] = "agentcompute" },
-		"another issuer":   func(c claims) { c["iss"] = "https://other.test" },
-		"too old to connect": func(c claims) {
-			old := time.Now().Add(-11 * time.Minute).Unix()
-			c["iat"], c["exp"] = old, old+3000
-			delete(c, "run")
-		},
-		"expired": func(c claims) {
-			old := time.Now().Add(-20 * time.Minute).Unix()
-			c["iat"], c["exp"] = old, old+600
-		},
-	}
-	for name, edit := range cases {
-		t.Run(name, func(t *testing.T) {
-			if c, err := h.dial(t, mint(t, h.priv, edit)); err == nil {
-				c.Close()
-				t.Fatal("accepted")
-			}
-		})
-	}
-	if c, err := h.dial(t, "not-a-token"); err == nil {
-		c.Close()
-		t.Fatal("accepted garbage")
-	}
-	// A wildcard computer scope of the same owner is a valid ceiling.
-	if c, err := h.dial(t, mint(t, h.priv, func(c claims) { c["scp"] = []string{"computer:*:ssh"} })); err != nil {
-		t.Fatalf("computer:*:ssh refused: %v", err)
-	} else {
-		c.Close()
-	}
 }
 
 func TestExecOutputExitCodeAndStdin(t *testing.T) {
@@ -408,7 +364,7 @@ func (s *safeBuffer) String() string { s.mu.Lock(); defer s.mu.Unlock(); return 
 
 func TestDisconnectEndsTheRunningCommand(t *testing.T) {
 	h := start(t)
-	c, err := h.dial(t, mint(t, h.priv, nil))
+	c, err := h.dialCert(t, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

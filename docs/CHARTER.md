@@ -8,9 +8,9 @@ The Rust `hostd` / `agentrouter link` was deleted on 2026-11-05 (#236); released
 until the base cutover, which retires them.
 
 **Belongs here**: embedding NetBird `client/embed` (BSD-3, pinned release): userspace networking, no admin rights, no
-driver; it joins the owner's NetBird network on our self-hosted management. NetBird's SSH server (`client/ssh/server`:
-shell, commands, SFTP, port forwarding, Windows included), JWT only: its `JWTConfig` (`Issuer`, `KeysLocation` = JWKS,
-`Audiences` = `netbird`, `MaxTokenAge`) comes per peer from management; the client allows the server. Our login (device
+driver; it joins the owner's NetBird network on our self-hosted management. Our own SSH server on the NetBird address
+(ADR 0002: shell, commands, SFTP, loopback forwarding, Windows included); logins by AgentCompute's SSH user
+certificates (compute/v1 §3; the token password only until AgentHost#385). Our login (device
 code to the person's NewAPI account), device name, tray, autostart, logout (= the peer is removed), updates, per-OS
 release builds (signing deferred, ADR 0001). Honest `facts` (OS, architecture, shell, CPU / memory / GPU, installed
 software) in AgentCompute's shape, with no flattening of OS differences.
@@ -25,7 +25,7 @@ The abandoned DSH-plugin / Desktop-adapter client (R46).
 **Contracts provided** (C1–C3): none; it provides a computer, an SSH endpoint in the owner's network.
 
 **Consumes** (pinned, C4, C6): AgentIdentity `identity/v1` (ES256 JWT, JWKS, device code at ZITADEL + STS exchange,
-`aud: netbird`; NewAPI's device login until the issuer switch); AgentCompute `compute/v1` (`kind: device`, `name`, `facts`);
+`aud: netbird` until AgentHost#385; NewAPI's device login until the issuer switch); AgentCompute `compute/v1` (`kind: device`, `name`, `facts`, `sshUserCAKeys`, `GET /v1/ssh-user-ca`);
 NetBird by `go.mod` version; our NetBird management by URL only (contract copies: `client/testdata/contracts/`).
 
 **How it is pinned**: per-OS binaries with `SHA256SUMS`, pre-releases `client-v0.0.0-<sha7>` and releases `client-vX.Y.Z`
