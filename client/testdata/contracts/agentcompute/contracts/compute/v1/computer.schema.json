@@ -131,6 +131,17 @@
         },
         "reclaimAt": { "type": "string", "format": "date-time", "description": "Present when nothing keeps the sandbox: when it is removed (its last hold ended + 30 minutes for temporary, + 6 hours for long; a failed sandbox 30 minutes after it failed, whatever holds it)." },
         "network": { "$ref": "network.schema.json#/$defs/network", "description": "Present when the sandbox has an allow list (README \"Egress\"); absent: every public host." },
+        "paid": {
+          "type": "object",
+          "description": "Present exactly on a cloud computer opened by a purchase (2026-11-12, additive, AgentCompute#202; README §14): its time is bought, never metered. It runs until `until`, is then stopped with its disk kept (`ranOut` true; :start and access answer 402 COMPUTE_PAID_TIME_OVER naming what to buy) and removed at `reclaimAt` (`until` + the grace hours, whatever holds it). Buying `item` again with this computer's id as `reference` moves `until`.",
+          "required": ["until", "item", "ranOut"],
+          "additionalProperties": false,
+          "properties": {
+            "until": { "type": "string", "format": "date-time", "description": "Paid until then." },
+            "item": { "type": "string", "description": "The shelf item it was bought with and is renewed with." },
+            "ranOut": { "type": "boolean", "description": "true once `until` has passed without a renewal." }
+          }
+        },
         "stopping": {
           "type": "object",
           "description": "Present while the sandbox's node is drained for a restart (2026-11-06, additive, AgentCompute#89; the same as its computer.stopping event): the sandbox stops at `deadline` at the latest. Hand the work over and release the hold before then.",

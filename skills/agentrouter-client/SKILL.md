@@ -10,7 +10,8 @@ A Go program embedding NetBird `client/embed` (userspace: no administrator right
 JWT-authenticated SSH server on the NetBird address (ADR 0002). It joins its owner's self-hosted NetBird network and
 opens no port on the computer's own network. Agents work on it through standard SSH / SFTP, reached through
 AgentCompute's SSH gateway (`compute/v1`). An SSH session acts as the device's user on the whole computer: no folder or
-machine access levels (R58). Its own: device-code login, enrolment and facts, device name, tray, autostart.
+machine access levels (R58). Its own: enrolment with an AgentCompute enrolment code (`agentdevice join <code>`: no
+login; it keeps a device key for its own record), the device-code login as the old path, facts, device name, tray, autostart.
 AgentCompute's cloud sandboxes run the same program (`agentdevice sandbox`).
 
 ## Where to read

@@ -2,8 +2,12 @@
 // an execution device the cloud reaches by SSH over the owner's private NetBird network. It only executes: no MCP, no
 // tools of its own, no administrator rights, no inbound port on the computer's own network.
 //
-//	agentdevice [run] [--name 台式机] [--no-tray]   log in and enrol when needed, then stay online
-//	agentdevice login [--name 台式机]               log in, enrol and join once (computers without a desktop)
+//	agentdevice join [<code>] [--name 台式机] [--once] [--no-tray]
+//	                                                enrol with an enrolment code (no login), then stay online; without
+//	                                                <code> the code is read from standard input; --once: enrol, join
+//	                                                the network once and end
+//	agentdevice [run] [--name 台式机] [--no-tray]   stay online (old path: log in and enrol first when needed)
+//	agentdevice login [--name 台式机]               old path: log in, enrol and join once (computers without a desktop)
 //	agentdevice status                              enrolment, endpoints, autostart
 //	agentdevice autostart on|off|status [--no-start] start at login (per user, no admin)
 //	agentdevice unbind                              remove this computer from the account
@@ -15,10 +19,12 @@
 //	agentdevice version
 //
 // Every command takes --home <folder> (default: the per-user config folder). Flags carry only small fixed values and
-// paths; tokens and keys live in files (R21).
+// paths; tokens and keys live in files (R21). The enrolment code is the one credential a person types: it works once,
+// for minutes, and can be given on standard input instead of the command line.
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -72,7 +78,9 @@ func main() {
 	var err error
 	switch cmd {
 	case "run":
-		err = runCmd(args, console)
+		err = runCmd(args, console, false)
+	case "join":
+		err = runCmd(args, console, true)
 	case "login":
 		err = loginCmd(args)
 	case "status":
@@ -105,8 +113,10 @@ func main() {
 }
 
 const usage = `用法：
-  agentdevice [run] [--name 名字] [--no-tray]   登录（第一次）并保持在线
-  agentdevice login [--name 名字]               只登录并加入网络（没有桌面的电脑）
+  agentdevice join <加入码> [--name 名字]       用加入码把这台电脑加入账号，并保持在线（不用登录）
+  agentdevice join <加入码> --once              只加入，不保持在线（之后用 agentdevice run）
+  agentdevice [run] [--no-tray]                 保持在线
+  agentdevice login [--name 名字]               旧方式：登录账号后加入（没有桌面的电脑）
   agentdevice status                            看这台电脑的状态
   agentdevice autostart on|off|status           登录电脑后自动启动（on --no-start：只登记，不马上启动）
   agentdevice unbind                            从账号里移除这台电脑
@@ -177,8 +187,27 @@ func defaultName() string {
 	return "我的电脑"
 }
 
-// removedText is what the person sees when the device's login was removed or revoked (owner wording).
-const removedText = "此设备已被移除，请重新登录"
+// removedText is what the person sees when the device's login was removed or revoked (owner wording);
+// removedJoinedText when a device that joined with an enrolment code was removed.
+const (
+	removedText       = "此设备已被移除，请重新登录"
+	removedJoinedText = "此设备已被移除，重新加入需要新的加入码"
+)
+
+// readCode reads the enrolment code from standard input (one line), so it need not be on the command line.
+func readCode() (string, error) {
+	if fi, err := os.Stdin.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
+		fmt.Print("粘贴加入码后回车：")
+	}
+	line, err := bufio.NewReader(io.LimitReader(os.Stdin, 8192)).ReadString('\n')
+	if code := strings.TrimSpace(line); code != "" {
+		return code, nil
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("join: reading the enrolment code from standard input: %w", err)
+	}
+	return "", errors.New("join: no enrolment code was given (agentdevice join <code>, or the code on standard input)")
+}
 
 // terminalUI prints to the terminal or the console window.
 type terminalUI struct{ w io.Writer }
@@ -267,10 +296,24 @@ func (u *trayUI) Status(s tray.State, text string) {
 	}
 }
 
-func runCmd(args []string, console bool) error {
-	fs := flag.NewFlagSet("run", flag.ContinueOnError)
-	name := fs.String("name", "", "the device name, at the first enrolment (default: the computer's name)")
+// runCmd keeps the device online. joining is `agentdevice join [<code>]`: the computer is enrolled with an enrolment
+// code first (no login). Without it, a computer that is not enrolled yet takes the old path (the device login).
+func runCmd(args []string, console, joining bool) error {
+	verb := "run"
+	if joining {
+		verb = "join"
+	}
+	fs := flag.NewFlagSet(verb, flag.ContinueOnError)
+	name := fs.String("name", "", "the device name, at the enrolment (default: the computer's name; an enrolment code made with a name decides it)")
 	noTray := fs.Bool("no-tray", false, "run without the tray icon")
+	onceOnly, code := new(bool), ""
+	if joining {
+		fs.BoolVar(onceOnly, "once", false, "enrol and join the network once, then end (stay online later with `agentdevice run`)")
+		// The code may come before the flags: agentdevice join <code> --once.
+		if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+			code, args = args[0], args[1:]
+		}
+	}
 	// The one visible console window comes first, before any child process starts: on Windows every command the
 	// Agents run attaches to it (no hidden and no extra windows, docs/development/AV-HYGIENE.md).
 	consoleOut, consoleErr := winconsole.Resident("AgentRouter 设备")
@@ -297,12 +340,57 @@ func runCmd(args []string, console bool) error {
 		return err
 	}
 	defer release()
-	if err := a.Cfg.Validate(a.Dir.Path("config.json")); err != nil {
-		return err
-	}
 	dev, err := a.Dir.LoadDevice()
 	if err != nil {
 		return err
+	}
+	if joining {
+		if dev != nil {
+			return fmt.Errorf("this computer is already enrolled as %s (%s); `agentdevice run` keeps it online, `agentdevice unbind` removes it so it can join again", dev.Name, dev.ComputerID)
+		}
+		if code == "" && fs.NArg() > 0 {
+			code = fs.Arg(0)
+		}
+		if code == "" {
+			if code, err = readCode(); err != nil {
+				return err
+			}
+		}
+		// Refused before anything is shown or sent when the code is not one.
+		if _, _, err := compute.ParseJoinCode(code); err != nil {
+			return fmt.Errorf("join: %w", err)
+		}
+	} else if dev == nil || dev.ComputeURL == "" {
+		// The old path needs the installed environment (issuer, compute/v1); a device that joined with a code named
+		// its service itself.
+		if err := a.Cfg.Validate(a.Dir.Path("config.json")); err != nil {
+			if dev == nil {
+				return fmt.Errorf("this computer is not enrolled: run `agentdevice join <code>` with an enrolment code (%w)", err)
+			}
+			return err
+		}
+	}
+	if joining && *onceOnly {
+		ctx, cancel := signalContext()
+		defer cancel()
+		n := *name
+		if n == "" {
+			n = defaultName()
+		}
+		join, err := a.Join(ctx, code, n, terminalUI{})
+		if err != nil {
+			return err
+		}
+		if err := a.JoinOnce(ctx, join); err != nil {
+			return fmt.Errorf("enrolled, but the first join of the network failed (`agentdevice unbind`, then join again with a new enrolment code): %w", err)
+		}
+		d, _ := a.Dir.LoadDevice()
+		fmt.Printf("这台电脑已加入：%s（%s）。保持在线：agentdevice run；登录后自动启动：agentdevice autostart on\n", d.Name, d.ComputerID)
+		return nil
+	}
+	removed := removedText
+	if joining || (dev != nil && dev.ComputeURL != "") {
+		removed = removedJoinedText
 	}
 	shown := *name
 	switch {
@@ -326,7 +414,13 @@ func runCmd(args []string, console bool) error {
 	work := func(ui app.UI) error {
 		var join *compute.Join
 		if dev == nil {
-			j, err := a.Login(ctx, shown, ui)
+			var j *compute.Join
+			var err error
+			if joining {
+				j, err = a.Join(ctx, code, shown, ui)
+			} else {
+				j, err = a.Login(ctx, shown, ui) // the old path
+			}
 			if err != nil {
 				return err
 			}
@@ -339,13 +433,13 @@ func runCmd(args []string, console bool) error {
 		if errors.Is(err, identity.ErrDeviceRemoved) {
 			a.Log.Error("stopped", "error", err.Error())
 			if consoleOut != nil {
-				fmt.Fprintln(consoleOut, time.Now().Format("15:04:05")+"  "+removedText)
+				fmt.Fprintln(consoleOut, time.Now().Format("15:04:05")+"  "+removed)
 			}
 			if runtime.GOOS == "windows" {
 				<-ctx.Done() // the message stays in the window until the person closes it
 				return nil
 			}
-			return errors.New(removedText)
+			return errors.New(removed)
 		}
 		if errors.Is(err, context.Canceled) {
 			return nil
@@ -363,7 +457,7 @@ func runCmd(args []string, console bool) error {
 			// Stay in the tray and the window with the reason; the full error is in the log.
 			a.Log.Error("stopped", "error", err.Error())
 			if errors.Is(err, identity.ErrDeviceRemoved) {
-				ui.Status(tray.Offline, removedText)
+				ui.Status(tray.Offline, removed)
 			} else {
 				ui.Status(tray.Offline, "停了："+short(err.Error()))
 			}
@@ -391,6 +485,7 @@ func short(s string) string {
 	return s
 }
 
+// loginCmd is the OLD PATH: the device login, then enrolment. New devices use `join <code>`.
 func loginCmd(args []string) error {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	name := fs.String("name", "", "the device name (default: the computer's name)")
@@ -440,9 +535,13 @@ func statusCmd(args []string) error {
 	if a.Cfg.Zitadel != nil {
 		fmt.Println("登录        ", a.Cfg.Zitadel.URL)
 	}
-	fmt.Println("算力层      ", orNone(a.Cfg.ComputeURL))
+	if dev != nil && dev.ComputeURL != "" {
+		fmt.Println("算力层      ", dev.ComputeURL, "（用加入码加入）")
+	} else {
+		fmt.Println("算力层      ", orNone(a.Cfg.ComputeURL))
+	}
 	if dev == nil {
-		fmt.Println("这台电脑    没有加入（agentdevice 或 agentdevice login）")
+		fmt.Println("这台电脑    没有加入（agentdevice join <加入码>）")
 	} else {
 		fmt.Printf("这台电脑    %s（%s，属于 %s，%s 加入）\n", dev.Name, dev.ComputerID, dev.Own, dev.EnrolledAt.Local().Format("2006-01-02 15:04"))
 		fmt.Println("网络        ", dev.ManagementURL)

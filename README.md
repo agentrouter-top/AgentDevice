@@ -12,10 +12,14 @@ Windows：在「我的设备」下载安装程序（现在只有 Dev 的 `agentd
 窗口里会说，下载新的安装程序装上即可（登录保留）。在「我的设备」里移除这台电脑，客户端就断开并忘掉登录；在「设置 › 应用」里卸载，会
 一并把这台电脑从账号里移除并删掉它的文件。Linux：下载 `agentdevice-linux-<amd64|arm64>-dev.tar.gz`，解压后运行 `agentdevice`。
 
+用加入码加入（不用登录）：持有账号密钥的一方（比如你的 Agent）向算力服务要一个加入码（`POST /v1/enrolment-codes`，一次有效、默认一小时），
+你在这台电脑上运行 `agentdevice join <加入码>`，它就加入账号并保持在线；以后启动用 `agentdevice run`，不再需要加入码。账号密钥不用也不要输入到这台电脑上。
+
 | 命令 | 作用 |
 | --- | --- |
-| `agentdevice [run] [--name 名字] [--no-tray]` | 登录（第一次）并保持在线 |
-| `agentdevice login [--name 名字]` | 只登录并加入网络（没有桌面的电脑） |
+| `agentdevice join <加入码> [--name 名字] [--once] [--no-tray]` | 用加入码加入并保持在线（`--once`：只加入；不写加入码时从标准输入读） |
+| `agentdevice [run] [--no-tray]` | 保持在线（旧方式：没加入过时先登录账号） |
+| `agentdevice login [--name 名字]` | 旧方式：登录账号后加入网络（没有桌面的电脑） |
 | `agentdevice status` / `facts` | 这台电脑的状态 / 上报的电脑信息 |
 | `agentdevice autostart on\|off\|status` | 登录电脑后自动启动（默认关） |
 | `agentdevice unbind` | 从账号里移除这台电脑 |
@@ -33,7 +37,7 @@ Charter (what belongs here, contracts consumed, how it is pinned): [docs/CHARTER
 
 | Module | Current state |
 | --- | --- |
-| [`client/`](client/README.md) | the Go program `agentdevice`: NetBird `client/embed` (userspace), our own SSH server ([ADR 0002](docs/adr/0002-own-ssh-server.md)), device-code login, enrolment and facts (AgentCompute `compute/v1`), tray, autostart |
+| [`client/`](client/README.md) | the Go program `agentdevice`: NetBird `client/embed` (userspace), our own SSH server ([ADR 0002](docs/adr/0002-own-ssh-server.md)), enrolment by code (`join`; the device-code login is the old path) and facts (AgentCompute `compute/v1`), tray, autostart |
 | [`release/`](release/README.md) | releases for people: `release.yml`, the environments (`environment.json` beside the program), the per-user Windows installer (Inno Setup), SmartScreen, the update notice |
 | `scripts/` | repository checks (`check-docs.mjs`, `check-repo-imports.mjs`, `check-node-version.mjs`, `av-hygiene.sh`), the main-red guard (`main-red.mjs`), the Windows end-to-end harness (`windows-e2e/`) |
 | `.github/workflows/` | `ci.yml` (checks, client tests, client pre-release), `release.yml` (releases for people), `merge-on-green.yml`, `main-red.yml`, `windows-e2e.yml` |

@@ -1,5 +1,6 @@
-// Package app is the client's flow: log the person in (device code), enrol the computer with compute/v1, join the
-// owner's NetBird network, serve SSH on the NetBird address, report facts, show the state in the tray.
+// Package app is the client's flow: enrol the computer with compute/v1 (Join: with an enrolment code, no login; the
+// old path, Login: the person's device-code login), join the owner's NetBird network, serve SSH on the NetBird
+// address, report facts, show the state in the tray.
 package app
 
 import (
@@ -55,12 +56,61 @@ type App struct {
 
 	// joinFile is a sandbox's join file (PrepareSandbox), read again for the SSH user CA keys.
 	joinFile string
+	// computeURL is the compute/v1 service of a device that joined with an enrolment code (device.json computeUrl):
+	// such a device calls it with its own device key and has no login. Empty on the old path.
+	computeURL string
 
 	sessOnce sync.Once
 	sess     *identity.Session
 }
 
-func (a *App) computeClient() *compute.Client { return &compute.Client{BaseURL: a.Cfg.ComputeURL} }
+func (a *App) computeClient() *compute.Client {
+	if a.computeURL != "" {
+		return &compute.Client{BaseURL: a.computeURL}
+	}
+	return &compute.Client{BaseURL: a.Cfg.ComputeURL}
+}
+
+// keyed reports whether this device joined with an enrolment code: it holds a device key and no login.
+func (a *App) keyed() bool { return a.computeURL != "" }
+
+// use makes dev the device this process acts for.
+func (a *App) use(dev *state.Device) { a.computeURL = dev.ComputeURL }
+
+// computeToken is the Bearer of this device's compute/v1 calls: its own device key (a device that joined with an
+// enrolment code), or, on the old path, a short identity/v1 token from the device login.
+func (a *App) computeToken(ctx context.Context) (string, error) {
+	if !a.keyed() {
+		return a.token(ctx, identity.AudienceCompute)
+	}
+	key, err := a.Dir.LoadDeviceKey()
+	if err != nil {
+		return "", err
+	}
+	if key == "" {
+		return "", fmt.Errorf("this device's key file %s is gone, so it cannot report to compute/v1: run `agentdevice unbind`, then join again with a new enrolment code", a.Dir.Path("device_key"))
+	}
+	return key, nil
+}
+
+// Join enrols the computer with an enrolment code (compute/v1 README §7): no login. The code names the service and
+// holds a one-use credential; the answer's device key is kept in an owner-only file and is the only credential this
+// device has from then on. It returns the one-use network join credential (kept in memory only) for the first Run.
+func (a *App) Join(ctx context.Context, code, name string, ui UI) (*compute.Join, error) {
+	base, credential, err := compute.ParseJoinCode(code)
+	if err != nil {
+		return nil, fmt.Errorf("join: %w", err)
+	}
+	ui.Status(tray.Connecting, "正在加入")
+	a.computeURL = base
+	a.Log.Info("joining with an enrolment code", "compute", base)
+	join, err := a.enrol(ctx, credential, name, "", "")
+	if err != nil {
+		a.computeURL = ""
+		return nil, err
+	}
+	return join, nil
+}
 
 // session is the device login (identity/v1 "Device login"): one per process, so refreshes happen one at a time.
 // config.json's zitadel selects the login at ZITADEL with exchanges at the STS; without it, NewAPI's device login.
@@ -91,7 +141,8 @@ func (a *App) token(ctx context.Context, aud string) (string, error) {
 	return a.session().Token(ctx, aud)
 }
 
-// Login runs the device-code login and enrols the computer under name. It returns the one-use join credential
+// Login is the OLD PATH (before enrolment codes; it stays until the web login returns): it runs the device-code login
+// and enrols the computer under name. It returns the one-use join credential
 // (kept in memory only) for the first Run.
 func (a *App) Login(ctx context.Context, name string, ui UI) (*compute.Join, error) {
 	if err := a.Cfg.Validate(a.Dir.Path("config.json")); err != nil {
@@ -112,18 +163,19 @@ func (a *App) Login(ctx context.Context, name string, ui UI) (*compute.Join, err
 		ten = c.Ten
 	}
 	a.Log.Info("logged in", "issuer", a.Cfg.Issuer, "login", a.session().Endpoints.TokenURL, "device", g.DeviceID, "ten", ten)
-	return a.enrol(ctx, name, ten, g.DeviceID)
-}
-
-// enrol is POST /v1/devices for this computer with its facts, host key and account.
-func (a *App) enrol(ctx context.Context, name, ten, deviceID string) (*compute.Join, error) {
-	signer, _, err := a.Dir.HostKey()
-	if err != nil {
-		return nil, err
-	}
 	tok, err := a.token(ctx, identity.AudienceCompute)
 	if err != nil {
 		return nil, fmt.Errorf("enrol: %w", err)
+	}
+	return a.enrol(ctx, tok, name, ten, g.DeviceID)
+}
+
+// enrol is POST /v1/devices for this computer with its facts, host key and account. tok is an enrolment code's
+// credential (Join) or the login's token (Login).
+func (a *App) enrol(ctx context.Context, tok, name, ten, deviceID string) (*compute.Join, error) {
+	signer, _, err := a.Dir.HostKey()
+	if err != nil {
+		return nil, err
 	}
 	key, err := a.Dir.IdempotencyKey()
 	if err != nil {
@@ -145,12 +197,24 @@ func (a *App) enrol(ctx context.Context, name, ten, deviceID string) (*compute.J
 	if err != nil {
 		return nil, fmt.Errorf("enrol: %w", err)
 	}
+	if a.keyed() {
+		if en.DeviceKey == "" {
+			return nil, fmt.Errorf("enrol: compute/v1 at %s enrolled %s but answered no device key, so this device could not report or be removed later; that service is older than enrolment codes. Remove the computer there (DELETE /v1/devices/%s) and update the service", a.computeURL, en.Computer.ID, en.Computer.ID)
+		}
+		// The key first: an enrolment without it could not be reported or unbound from here.
+		if err := a.Dir.SaveDeviceKey(en.DeviceKey); err != nil {
+			return nil, err
+		}
+		// An account that enrols with a code is its own tenant (compute/v1 README §13).
+		ten = en.Computer.Own
+	}
 	dev := &state.Device{
 		ComputerID:    en.Computer.ID,
 		Own:           en.Computer.Own,
 		Ten:           ten,
 		DeviceID:      deviceID,
 		Name:          en.Computer.Name,
+		ComputeURL:    a.computeURL,
 		ManagementURL: en.Network.ManagementURL,
 		PeerName:      en.Network.DeviceName,
 		JoinMethod:    en.Network.Join.Method,
@@ -197,8 +261,8 @@ func accountName(current func() (*user.User, error), getenv func(string) string,
 	return ""
 }
 
-// Unbind removes this computer at compute/v1 (its NetBird peer is deleted), ends the login at ZITADEL (its refresh
-// token is revoked) and forgets the enrolment here.
+// Unbind removes this computer at compute/v1 (its NetBird peer and its device key are deleted), on the old path ends
+// the login at ZITADEL (its refresh token is revoked), and forgets the enrolment here.
 func (a *App) Unbind(ctx context.Context) error {
 	dev, err := a.Dir.LoadDevice()
 	if err != nil {
@@ -207,12 +271,17 @@ func (a *App) Unbind(ctx context.Context) error {
 	if dev == nil {
 		return errors.New("this device is not enrolled")
 	}
-	tok, err := a.token(ctx, identity.AudienceCompute)
+	a.use(dev)
+	tok, err := a.computeToken(ctx)
 	if err != nil {
 		return fmt.Errorf("unbind: %w", err)
 	}
-	if err := a.computeClient().Unbind(ctx, tok, dev.ComputerID); err != nil {
+	// A device key compute/v1 no longer knows: the computer was removed there already; only this side is left.
+	if err := a.computeClient().Unbind(ctx, tok, dev.ComputerID); err != nil && !(a.keyed() && compute.IsKeyRefused(err)) {
 		return fmt.Errorf("unbind: %w", err)
+	}
+	if a.keyed() {
+		return a.Dir.Forget()
 	}
 	if err := a.session().Revoke(ctx); err != nil {
 		// The computer is gone at compute/v1 already; the refresh token is forgotten below and ends at ZITADEL's expiry.
@@ -272,7 +341,7 @@ func (a *App) Run(parent context.Context, join *compute.Join, ui UI) error {
 	}
 	if errors.Is(err, identity.ErrDeviceRemoved) {
 		a.Log.Error("device removed or login revoked; forgetting the enrolment", "error", err.Error())
-		if !a.Headless {
+		if !a.Headless && !a.keyed() {
 			// The login is of no use without the computer: end it at ZITADEL too (already refused when that was the cause).
 			rctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 10*time.Second)
 			if rerr := a.session().Revoke(rctx); rerr != nil {
@@ -294,11 +363,12 @@ func (a *App) run(ctx context.Context, stop context.CancelCauseFunc, join *compu
 		return err
 	}
 	if dev == nil {
-		return errors.New("this device is not enrolled: run `agentdevice login`")
+		return errors.New("this device is not enrolled: run `agentdevice join <code>` with an enrolment code")
 	}
+	a.use(dev)
 	if !dev.Joined && join == nil && dev.JoinMethod == "setup-key" {
 		// The one-use setup key lived only in the enrolling process, which ended before the first join.
-		return fmt.Errorf("the first join of %s (%s) did not finish and its one-use key is gone: run `agentdevice unbind`, then `agentdevice login` again", dev.Name, dev.ComputerID)
+		return fmt.Errorf("the first join of %s (%s) did not finish and its one-use key is gone: run `agentdevice unbind`, then join again with a new enrolment code", dev.Name, dev.ComputerID)
 	}
 	signer, _, err := a.Dir.HostKey()
 	if err != nil {
@@ -310,22 +380,27 @@ func (a *App) run(ctx context.Context, stop context.CancelCauseFunc, join *compu
 	cas := a.sshUserCA(ctx, dev)
 	// LEGACY: the token password (sshd/legacy_token.go) until AgentHost logs in with certificates (AgentHost#385,
 	// deletion tracked on AgentDevice#253): delete this verifier and the Authorizer below with it.
-	verifier := &identity.Verifier{Issuer: a.Cfg.Issuer, Keys: &identity.RemoteKeys{URL: a.Cfg.JWKSURL}}
-	srv, err := sshd.New(sshd.Config{
-		HostKey:      signer,
-		Certificates: &sshd.CertAuthority{Keys: cas, ComputerID: dev.ComputerID, Own: dev.Own, Ten: dev.Ten},
-		Authorizer: &sshd.Authorizer{
-			Verifier:   verifier,
+	// A device without an issuer (one that joined with an enrolment code and has no environment file) takes
+	// certificates only.
+	var legacy *sshd.Authorizer
+	if a.Cfg.Issuer != "" {
+		legacy = &sshd.Authorizer{
+			Verifier:   &identity.Verifier{Issuer: a.Cfg.Issuer, Keys: &identity.RemoteKeys{URL: a.Cfg.JWKSURL}},
 			ComputerID: dev.ComputerID,
 			Own:        dev.Own,
 			Ten:        dev.Ten,
 			MaxAge:     time.Duration(a.Cfg.TokenMaxAgeSeconds) * time.Second,
-		},
-		Shell:   sh,
-		BaseEnv: env,
-		Home:    home,
-		Version: a.Version,
-		Log:     a.Log.With("part", "sshd"),
+		}
+	}
+	srv, err := sshd.New(sshd.Config{
+		HostKey:      signer,
+		Certificates: &sshd.CertAuthority{Keys: cas, ComputerID: dev.ComputerID, Own: dev.Own, Ten: dev.Ten},
+		Authorizer:   legacy,
+		Shell:        sh,
+		BaseEnv:      env,
+		Home:         home,
+		Version:      a.Version,
+		Log:          a.Log.With("part", "sshd"),
 		Activity: func(act sshd.Activity) {
 			say(a.Console, ActivityLine(act))
 		},
@@ -350,8 +425,13 @@ func (a *App) run(ctx context.Context, stop context.CancelCauseFunc, join *compu
 		if errors.Is(err, identity.ErrDeviceRemoved) {
 			return err
 		}
-		// A peer that cannot join may have been removed: ask the issuer, which knows for sure.
-		if !a.Headless {
+		// A peer that cannot join may have been removed: ask who knows for sure (compute/v1 for a device with its own
+		// key, the issuer on the old path).
+		if a.keyed() && join == nil {
+			if rerr := a.putFacts(ctx, dev, facts.Collect(ctx)); errors.Is(rerr, identity.ErrDeviceRemoved) {
+				return rerr
+			}
+		} else if !a.Headless && !a.keyed() {
 			if _, terr := a.token(ctx, identity.AudienceCompute); errors.Is(terr, identity.ErrDeviceRemoved) {
 				return terr
 			}
@@ -439,7 +519,7 @@ func (a *App) fetchSSHUserCA(ctx context.Context) ([]string, error) {
 		}
 		return j.SSHUserCAKeys, nil
 	}
-	tok, err := a.token(ctx, identity.AudienceCompute)
+	tok, err := a.computeToken(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("ssh user CA: %w", err)
 	}
@@ -525,15 +605,16 @@ func (a *App) reportFacts(ctx context.Context, stop context.CancelCauseFunc, dev
 	}
 }
 
-// putFacts reports the facts. compute/v1 answering that this computer does not exist means it was removed: that is
-// identity.ErrDeviceRemoved, the one way the device ends (as a refused login does).
+// putFacts reports the facts. compute/v1 answering that this computer does not exist, or that this device's own key
+// does not (it is deleted with the computer), means it was removed: that is identity.ErrDeviceRemoved, the one way the
+// device ends (as a refused login does).
 func (a *App) putFacts(ctx context.Context, dev *state.Device, f facts.Facts) error {
-	tok, err := a.token(ctx, identity.AudienceCompute)
+	tok, err := a.computeToken(ctx)
 	if err != nil {
 		return err
 	}
 	err = a.computeClient().ReportFacts(ctx, tok, dev.ComputerID, f)
-	if compute.IsComputerGone(err) {
+	if compute.IsComputerGone(err) || (a.keyed() && compute.IsKeyRefused(err)) {
 		return errors.Join(identity.ErrDeviceRemoved, fmt.Errorf("compute/v1 no longer has %s (%s): it was removed from the account: %w", dev.ComputerID, dev.Name, err))
 	}
 	return err
@@ -586,6 +667,7 @@ func (a *App) JoinOnce(ctx context.Context, join *compute.Join) error {
 	if err != nil || dev == nil {
 		return fmt.Errorf("join: no enrolment (%v)", err)
 	}
+	a.use(dev)
 	opts, err := a.joinOptions(ctx, dev, join)
 	if err != nil {
 		return err

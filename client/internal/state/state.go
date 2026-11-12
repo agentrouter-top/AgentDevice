@@ -1,6 +1,7 @@
 // Package state holds what the client keeps on disk, all in one folder of the person's own profile (no admin rights,
 // nothing outside it): the endpoints (config.json, over the installed environment.json beside the program), the
-// enrolment (device.json), the device login's newest refresh token, the SSH host key and NetBird's own config. Secrets are files only this account can read (0600; on Windows
+// enrolment (device.json), the device's own compute/v1 key (device_key; a device that joined with an enrolment code) or
+// the device login's newest refresh token (the old path), the SSH host key and NetBird's own config. Secrets are files only this account can read (0600; on Windows
 // a protected DACL naming only this account), written atomically, never command lines or environment variables (R21).
 package state
 
@@ -200,8 +201,11 @@ type Device struct {
 	// Ten is the tenant of the device's login (identity/v1: the client id's tenant); SSH tokens must carry it too.
 	Ten string `json:"ten,omitempty"`
 	// DeviceID is the login as NewAPI's device list showed it (NewAPI login only; the ZITADEL login has none).
-	DeviceID      string    `json:"deviceId,omitempty"`
-	Name          string    `json:"name"`
+	DeviceID string `json:"deviceId,omitempty"`
+	Name     string `json:"name"`
+	// ComputeURL is the compute/v1 service this device enrolled at with an enrolment code (the code names it); it
+	// wins over config.json's computeUrl. Empty on the old path (the device login).
+	ComputeURL    string    `json:"computeUrl,omitempty"`
 	ManagementURL string    `json:"managementUrl"`
 	PeerName      string    `json:"peerName,omitempty"`
 	JoinMethod    string    `json:"joinMethod"`
@@ -251,13 +255,31 @@ func (d Dir) SaveRefresh(token string) error {
 	return d.writePrivate("refresh_token", []byte(token+"\n"))
 }
 
+// LoadDeviceKey reads the device's own compute/v1 key ("" when this device did not join with an enrolment code).
+func (d Dir) LoadDeviceKey() (string, error) {
+	raw, err := os.ReadFile(d.Path("device_key"))
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("state: read the device key %s: %w", d.Path("device_key"), err)
+	}
+	return strings.TrimSpace(string(raw)), nil
+}
+
+// SaveDeviceKey keeps the device's own compute/v1 key (owner-only file, atomically). It reaches this computer's
+// record only; compute/v1 deletes it when the device is unbound.
+func (d Dir) SaveDeviceKey(key string) error {
+	return d.writePrivate("device_key", []byte(key+"\n"))
+}
+
 // NetBirdConfig is the path of NetBird's own config (WireGuard key, management URL).
 func (d Dir) NetBirdConfig() string { return d.Path("netbird.json") }
 
-// Forget removes the enrolment, the refresh token and NetBird's config; the host key and config.json stay.
+// Forget removes the enrolment, the device key, the refresh token and NetBird's config; the host key and config.json stay.
 func (d Dir) Forget() error {
 	var errs []error
-	for _, name := range []string{"device.json", "refresh_token", "netbird.json", "idempotency-key"} {
+	for _, name := range []string{"device.json", "device_key", "refresh_token", "netbird.json", "idempotency-key"} {
 		if err := os.Remove(d.Path(name)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			errs = append(errs, err)
 		}
