@@ -41,7 +41,7 @@ jobs:
       - name: Docs placed, mapped and linked (docs/README.md)
         run: node scripts/check-docs.mjs
       - name: No path into another repository (agentteam-deployments docs/development/CONTRACTS.md C6)
-        run: node scripts/check-repo-imports.mjs
+        run: node scripts/check-repo-imports.mjs && node scripts/check-kernel-boundary.mjs
       - name: One Node version, from .node-version (scripts/check-node-version.mjs, AgentHost#278)
         run: node scripts/check-node-version.mjs
       - name: main-red guard decisions (scripts/main-red.mjs, #125)
