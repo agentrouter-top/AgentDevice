@@ -1,5 +1,5 @@
 // Package compute is the client side of AgentCompute's compute/v1 "devices" operations (contracts/compute/v1:
-// device.schema.json, openapi.yaml): enrol this computer, report its facts, unbind it. Every call carries an
+// device.schema.json, openapi.yaml): enrol this computer, report its facts, read the SSH user CA keys, unbind it. Every call carries an
 // identity/v1 token with aud agentcompute; errors are the RFC 9457 problems of contracts/errors/v1, kept whole.
 package compute
 
@@ -48,6 +48,8 @@ type Network struct {
 	ManagementURL string `json:"managementUrl"`
 	DeviceName    string `json:"deviceName,omitempty"`
 	Join          Join   `json:"join"`
+	// SSHUserCAKeys are the SSH user CA's public keys (authorized_keys lines) this computer's SSH server trusts.
+	SSHUserCAKeys []string `json:"sshUserCAKeys,omitempty"`
 }
 
 // Enrolment is device.schema.json $defs/enrolment.
@@ -196,6 +198,18 @@ func (c *Client) Enrol(ctx context.Context, token, idempotencyKey string, req En
 // ReportFacts is PUT /v1/computers/{id}/facts (scope computer:<id>:report).
 func (c *Client) ReportFacts(ctx context.Context, token, id string, f facts.Facts) error {
 	return c.do(ctx, http.MethodPut, "/v1/computers/"+id+"/facts", token, nil, f, nil)
+}
+
+// SSHUserCA is GET /v1/ssh-user-ca (scope computer:*:report): the SSH user CA's public keys a computer's SSH server
+// trusts (authorized_keys lines; more than one during a rotation).
+func (c *Client) SSHUserCA(ctx context.Context, token string) ([]string, error) {
+	var out struct {
+		Keys []string `json:"keys"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/v1/ssh-user-ca", token, nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Keys, nil
 }
 
 // Unbind is DELETE /v1/devices/{id} (scope computer:<id>:manage): the NetBird peer is deleted.

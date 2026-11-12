@@ -32,11 +32,15 @@ type SandboxJoin struct {
 	HostKey            string `json:"hostKey"`
 	User               string `json:"user,omitempty"`
 	TokenMaxAgeSeconds int    `json:"tokenMaxAgeSeconds,omitempty"`
-	Proxy              *struct {
+	// SSHUserCAKeys are the SSH user CA's public keys the SSH server trusts (compute/v1 README §3).
+	SSHUserCAKeys []string `json:"sshUserCAKeys,omitempty"`
+	Proxy         *struct {
 		URL    string   `json:"url"`
 		Hosts  []string `json:"hosts"`
 		Listen string   `json:"listen,omitempty"`
 	} `json:"proxy,omitempty"`
+
+	path string // where it was read
 }
 
 // ReadSandboxJoin reads and checks the join file. The file holds secrets: errors never quote its values.
@@ -67,6 +71,7 @@ func ReadSandboxJoin(path string) (*SandboxJoin, error) {
 	if j.DeviceName == "" {
 		j.DeviceName = j.Computer
 	}
+	j.path = path
 	return &j, nil
 }
 
@@ -97,11 +102,14 @@ func (a *App) PrepareSandbox(j *SandboxJoin) (*compute.Join, error) {
 	if dev == nil {
 		dev = &state.Device{ComputerID: j.Computer, Own: j.Own, Ten: j.Ten, Name: j.DeviceName, ManagementURL: j.ManagementURL,
 			PeerName: j.DeviceName, JoinMethod: "setup-key", EnrolledAt: time.Now().UTC()}
-		if err := a.Dir.SaveDevice(dev); err != nil {
-			return nil, err
-		}
+	}
+	// The join file is this sandbox's source of the SSH user CA keys (it has no login for GET /v1/ssh-user-ca).
+	dev.SSHUserCAKeys = j.SSHUserCAKeys
+	if err := a.Dir.SaveDevice(dev); err != nil {
+		return nil, err
 	}
 	a.Headless = true
+	a.joinFile = j.path
 	// Also after the first join: NetBird logs a known peer key in without it, and a start that died before
 	// device.json said "joined" still has its key.
 	return &compute.Join{Method: "setup-key", SetupKey: j.SetupKey}, nil

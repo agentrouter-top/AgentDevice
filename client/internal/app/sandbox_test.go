@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
@@ -36,8 +37,23 @@ func joinFile(t *testing.T) (map[string]any, ed25519.PublicKey) {
 		"issuer": "https://newapi.test", "managementUrl": "https://netbird.test", "deviceName": "cmp_sandbox0test0id0aa",
 		"setupKey": "TEST-SETUP-KEY", "hostKey": string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})),
 		"user": "node", "tokenMaxAgeSeconds": 600,
-		"proxy": map[string]any{"url": "http://172.20.0.1:3128", "hosts": []string{"netbird.test"}},
+		"proxy":         map[string]any{"url": "http://172.20.0.1:3128", "hosts": []string{"netbird.test"}},
+		"sshUserCAKeys": []string{testCAKey(t)},
 	}, pub
+}
+
+// testCAKey is an SSH user CA public key (authorized_keys line).
+func testCAKey(t *testing.T) string {
+	t.Helper()
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k, err := ssh.NewPublicKey(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(k))) + " agentcompute-ssh-user-ca"
 }
 
 func joinSchema(t *testing.T) *jsonschema.Schema {
@@ -102,6 +118,22 @@ func TestSandboxJoinFromTheProvidersFile(t *testing.T) {
 	dev, _ := dir.LoadDevice()
 	if dev == nil || dev.ComputerID != "cmp_sandbox0test0id0aa" || dev.Own != "acc_7" || dev.Ten != "acc_2210" || dev.PeerName != dev.ComputerID || dev.JoinMethod != "setup-key" {
 		t.Fatalf("device %+v", dev)
+	}
+	if len(dev.SSHUserCAKeys) != 1 || dev.SSHUserCAKeys[0] != file["sshUserCAKeys"].([]string)[0] {
+		t.Fatalf("the SSH user CA keys were not taken from the join file: %v", dev.SSHUserCAKeys)
+	}
+	// The join file is where a sandbox reads the CA keys again (it has no login for GET /v1/ssh-user-ca).
+	file["sshUserCAKeys"] = []string{testCAKey(t), file["sshUserCAKeys"].([]string)[0]}
+	raw, _ = json.Marshal(file)
+	if err := os.WriteFile(j.path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if keys, err := a.fetchSSHUserCA(context.Background()); err != nil || len(keys) != 2 {
+		t.Fatalf("re-reading the join file: %v %v", keys, err)
+	}
+	cas := a.sshUserCA(context.Background(), dev)
+	if len(cas.Fingerprints()) != 1 {
+		t.Fatalf("trusted at start: %v (the saved keys)", cas.Fingerprints())
 	}
 	signer, _, err := dir.HostKey()
 	if err != nil {

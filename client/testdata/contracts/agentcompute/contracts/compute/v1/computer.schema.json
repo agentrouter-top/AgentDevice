@@ -21,7 +21,7 @@
     },
     "state": {
       "enum": ["online", "offline", "sleeping", "starting"],
-      "description": "From the connection layer (the NetBird peer's status; for a sandbox also its provider's lifecycle), never stored as a second copy. online: its client is connected and SSH answers. offline: it should be reachable and is not (device switched off, network lost). sleeping: a stopped sandbox (:start wakes it). starting: a sandbox being created or started, or a device whose client is connecting."
+      "description": "From the connection layer (the NetBird peer's status; for a sandbox also its provider's lifecycle), never stored as a second copy. online: its client is connected and SSH answers. offline: it should be reachable and is not (device switched off, network lost), or a sandbox whose create failed (`sandbox.failure` says why; it never comes online). sleeping: a stopped sandbox (:start wakes it). starting: a sandbox being created or started, or a device whose client is connecting."
     },
     "stateSince": { "type": "string", "format": "date-time", "description": "When `state` last changed." },
     "facts": { "$ref": "#/$defs/facts" },
@@ -129,7 +129,35 @@
           "items": { "$ref": "sandbox.schema.json#/$defs/hold" },
           "description": "Live holds (a lapsed hold is dropped). A sandbox without one is reclaimed at `reclaimAt`, except a long one never held."
         },
-        "reclaimAt": { "type": "string", "format": "date-time", "description": "Present when nothing keeps the sandbox: when it is removed (its last hold ended + 30 minutes for temporary or a failed sandbox, + 6 hours for long)." }
+        "reclaimAt": { "type": "string", "format": "date-time", "description": "Present when nothing keeps the sandbox: when it is removed (its last hold ended + 30 minutes for temporary, + 6 hours for long; a failed sandbox 30 minutes after it failed, whatever holds it)." },
+        "network": { "$ref": "network.schema.json#/$defs/network", "description": "Present when the sandbox has an allow list (README \"Egress\"); absent: every public host." },
+        "stopping": {
+          "type": "object",
+          "description": "Present while the sandbox's node is drained for a restart (2026-11-06, additive, AgentCompute#89; the same as its computer.stopping event): the sandbox stops at `deadline` at the latest. Hand the work over and release the hold before then.",
+          "required": ["deadline", "reason"],
+          "properties": {
+            "deadline": { "type": "string", "format": "date-time" },
+            "reason": { "enum": ["node-restart"] }
+          },
+          "additionalProperties": false
+        },
+        "failure": {
+          "type": "object",
+          "description": "Present when the sandbox's create failed (2026-11-08, additive, AgentCompute#163): it never runs, `state` stays offline, every call that needs it (access, holds, :start, :stop) is refused with COMPUTE_SANDBOX_FAILED carrying this as its cause, and it is removed 30 minutes after `at` whatever holds it. The problem's facts (R22): which part failed, during what, the cause chain as it came (e.g. the node's Docker/Sysbox error), and what to do: create a new sandbox (a new Idempotency-Key).",
+          "required": ["code", "component", "operation", "detail", "retryable", "next", "at"],
+          "properties": {
+            "code": { "type": "string", "description": "COMPUTE_SANDBOX_FAILED (contracts/errors/v1)." },
+            "component": { "type": "string" },
+            "operation": { "type": "string" },
+            "target": { "type": "string" },
+            "detail": { "type": "string" },
+            "retryable": { "type": "boolean", "description": "false: this sandbox will not come up; a new one may." },
+            "next": { "type": "string" },
+            "cause": { "type": "object", "description": "The cause chain, as it came: { code?, component?, status?, detail, cause? }." },
+            "at": { "type": "string", "format": "date-time" }
+          },
+          "additionalProperties": false
+        }
       },
       "additionalProperties": false
     }
