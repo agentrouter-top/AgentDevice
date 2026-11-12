@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentcompute:compute:v1:network",
+  "title": "compute/v1 sandbox egress",
+  "description": "A sandbox's outbound network (README.md \"Egress\"): its allow list (POST /v1/sandboxes `network`, PATCH /v1/computers/{id}/network) and the platform-wide deny list (PUT / DELETE /v1/admin/egress-deny/{host}). Enforced at the sandbox node's egress proxy; a refused request is answered 403 with one line naming the host and the list that refused it (`$defs/refusal`).",
+  "$defs": {
+    "host": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253,
+      "pattern": "^(\\*\\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$",
+      "description": "A host name, lower case, at least two labels (the last one starts with a letter), no port, no trailing dot: `api.example.com` matches exactly that host; `*.example.com` matches every name under example.com (`a.example.com`, `a.b.example.com`), not example.com itself. IP addresses are not names: a sandbox with an allow list reaches no address by IP."
+    },
+    "denyHost": {
+      "anyOf": [
+        { "$ref": "#/$defs/host" },
+        { "type": "string", "maxLength": 15, "pattern": "^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$", "description": "An IPv4 address, refused when a request names it literally." }
+      ]
+    },
+    "network": {
+      "type": "object",
+      "required": ["allow"],
+      "description": "The hosts commands in the sandbox may reach (HTTP and HTTPS through the node's egress proxy, ports 80 and 443). Absent on a sandbox: every public host, as before this field existed. Present: only these, plus what this layer's own client needs (its NetBird network and the identity issuer; README \"Egress\"). An empty list reaches nothing else. The platform deny list applies first either way.",
+      "properties": {
+        "allow": {
+          "type": "array",
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/host" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "networkUpdate": {
+      "type": "object",
+      "required": ["allow"],
+      "description": "PATCH /v1/computers/{id}/network: the new allow list of a sandbox (replaces the old one), or null for none (every public host again). The node's proxy applies it within 10 seconds; open connections are not cut.",
+      "properties": {
+        "allow": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/network/properties/allow" }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "networkState": {
+      "type": "object",
+      "required": ["allow"],
+      "description": "A sandbox's egress as this layer holds it (PATCH answer). `allow` null: no list, every public host.",
+      "properties": {
+        "allow": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/network/properties/allow" }
+          ]
+        },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+    "cause": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^[\\x21-\\x7e]+$",
+      "description": "Why the entry exists, shown in every refusal it causes and in the logs (e.g. `scorer-fault:42`, `abuse:ticket-17`): printable ASCII without spaces."
+    },
+    "denyRequest": {
+      "type": "object",
+      "required": ["expiresAt", "cause"],
+      "description": "PUT /v1/admin/egress-deny/{host}. Putting the same host again replaces its entry (a new expiry or cause).",
+      "properties": {
+        "expiresAt": { "type": "string", "format": "date-time", "description": "When the entry ends by itself: in the future, at most 30 days ahead." },
+        "cause": { "$ref": "#/$defs/cause" }
+      },
+      "additionalProperties": false
+    },
+    "denyEntry": {
+      "type": "object",
+      "required": ["host", "cause", "expiresAt", "createdAt", "createdBy"],
+      "properties": {
+        "host": { "$ref": "#/$defs/denyHost" },
+        "cause": { "$ref": "#/$defs/cause" },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "createdBy": { "type": "string", "maxLength": 200, "description": "The caller's identity/v1 `sub` and `ten` (`svc_judge@acc_…`)." }
+      },
+      "additionalProperties": false
+    },
+    "denyList": {
+      "type": "object",
+      "required": ["entries"],
+      "properties": {
+        "entries": { "type": "array", "items": { "$ref": "#/$defs/denyEntry" }, "description": "Live entries (an expired one is gone)." }
+      },
+      "additionalProperties": false
+    },
+    "reason": {
+      "enum": ["not-declared", "blocked-by-platform", "port-not-allowed"],
+      "description": "Which list refused: not-declared = the host is not in the sandbox's allow list; blocked-by-platform = the platform deny list (an operator entry, its `cause` named) or a range no sandbox reaches (private, link-local and metadata addresses: cause `private-address`); port-not-allowed = only ports 80 and 443 (CONNECT only to 443)."
+    },
+    "refusal": {
+      "type": "string",
+      "pattern": "^EGRESS_DENIED host=\\S+ computer=\\S+ reason=(not-declared|blocked-by-platform|port-not-allowed)( cause=\\S+)?( until=\\S+)? retryable=(true|false) next=.+$",
+      "description": "The body of the proxy's 403 (one line; also in the response header `X-AgentCompute-Egress` with `;` between the fields): `EGRESS_DENIED host=<host> computer=<cmp_…|unknown> reason=<reason> [cause=<cause>] [until=<expiresAt>] retryable=<true|false> next=<what to do>`. retryable is true only for a deny entry that expires (`until`). The SDK parses it (`parseEgressRefusal`)."
+    }
+  }
+}
