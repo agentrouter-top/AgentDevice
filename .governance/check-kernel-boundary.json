@@ -1,0 +1,9 @@
+{
+  "gate": "check-kernel-boundary",
+  "mode": "report-only-then-fail-on-new",
+  "reportOnlyUntil": "2026-11-19",
+  "updated": "2026-11-12",
+  "findings": {
+    "netbird-audience: client/internal/sshd/legacy_token.go": 1
+  }
+}
