@@ -19,6 +19,7 @@ require (
 	github.com/shirou/gopsutil/v4 v4.25.8
 	github.com/skratchdot/open-golang v0.0.0-20200116055534-eef842397966
 	golang.org/x/crypto v0.55.0
+	golang.org/x/crypto/x509roots/fallback v0.0.0-20261113174652-9ccaac6145fb
 	golang.org/x/oauth2 v0.37.0
 	golang.org/x/sys v0.47.0
 )
