@@ -1,6 +1,6 @@
-// Shared baseline logic of the governance code checks (docs/development/GOVERNANCE.md §4.2): size-budget,
-// check-charter, check-vendor-pins. A gate collects findings as { key: value } (value = a number, e.g. a line count,
-// or `true`); this module compares them with the repository's baseline `.governance/<gate>.json` and decides the exit
+// Shared baseline logic of the governance code checks (docs/development/GOVERNANCE.md §4.2): check-charter,
+// check-vendor-pins, check-sdk-only, check-kernel-boundary. A gate collects findings as { key: value } (value = a number,
+// e.g. the count of one kind of finding in a file, or `true`); this module compares them with the repository's baseline `.governance/<gate>.json` and decides the exit
 // code. Rollout (GW5): while `today <= reportOnlyUntil` (or no baseline exists) the gate only reports; afterwards it
 // fails on a finding that is not in the baseline or whose number grew. The baseline only shrinks: `--update-baseline`
 // removes fixed entries and lowers numbers, `--init` (re)writes it in full and starts the report-only week.
