@@ -6,14 +6,14 @@ moved docs in [ARCHIVE.md](ARCHIVE.md). The Agent model, computers and the SSH g
 live in Cloud `docs/development/AGENT-FRAMEWORK.md` and AgentCompute (`compute/v1`).
 
 `node scripts/check-docs.mjs` (CI job "Repository checks", seconds) fails when a Markdown file is neither a
-row nor allowlisted, a row's type does not fit its place, a `module` README is over 40 lines, a `reference` doc lacks
+row nor allowlisted, a row's type does not fit its place, a `reference` doc lacks
 its `Last verified: YYYY-MM-DD against <commit>` line or the map shows another date, a removed path exists again, or a
 link in a mapped doc does not resolve (lychee, offline: repository files and `#fragments`). `node
 scripts/check-docs.mjs --stale` lists reference docs not verified for 30 days.
 
-Types: **entry** (root `README.md`, `AGENTS.md`, `SECURITY.md`), **index** (this map, ARCHIVE), **charter** (`docs/CHARTER.md`, at most 40 lines), **development**
-(`docs/development/`, how to work here), **adr** (`docs/adr/NNNN-name.md`, dated decisions), **module** (a short README
-of a directory, at most 40 lines).
+Types: **entry** (root `README.md`, `AGENTS.md`, `SECURITY.md`), **index** (this map, ARCHIVE), **charter** (`docs/CHARTER.md`), **development**
+(`docs/development/`, how to work here), **adr** (`docs/adr/NNNN-name.md`, dated decisions), **module** (the README
+of a directory).
 
 ## Documents
 

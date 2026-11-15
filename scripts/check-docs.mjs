@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// The documentation framework's check (owner 2026-11-03 「做好文档的记录框架，不要再让各个文档散落在各处」). Same
-// rules and code as agentrouter-cloud scripts/check-docs.mjs (Cloud docs/development/DOCS.md); only the block
-// "Repository settings" below differs between repositories. Seconds, no install.
+// The documentation framework's check (owner 2026-11-03 「做好文档的记录框架，不要再让各个文档散落在各处」). Canonical
+// copy: agentteam-deployments scripts/check-docs.mjs; only the block "Repository settings" below differs between
+// repositories. It counts no lines (owner 2026-11-15 「删，行数限制都不要」, R103). Seconds, no install.
 //
 //   node scripts/check-docs.mjs                  places, map and links (exit 1 with every problem)
 //   node scripts/check-docs.mjs --no-links       places and map only
@@ -36,10 +36,8 @@ const MODULE_IDS = null;
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const INDEX = "docs/README.md";
 export const ARCHIVE = "docs/ARCHIVE.md";
-export const MODULE_README_MAX_LINES = 40;
 /** The repository charter (agentteam-deployments docs/development/CONTRACTS.md): one page, linked from AGENTS.md. */
 export const CHARTER = "docs/CHARTER.md";
-export const CHARTER_MAX_LINES = 40;
 
 const ENTRY = new Set(ENTRY_FILES);
 /** Where each doc type may live (Cloud docs/development/DOCS.md "Types"). `pending` = awaiting its cleanup verdict. */
@@ -52,7 +50,7 @@ export const TYPES = Object.freeze({
   operations: { where: "docs/operations/", ok: (p) => p.startsWith("docs/operations/") },
   adr: { where: "docs/adr/NNNN-name.md", ok: (p) => /^docs\/adr\/\d{4}-[a-z0-9-]+\.md$/u.test(p) },
   charter: { where: CHARTER, ok: (p) => p === CHARTER },
-  module: { where: `a README.md, AGENTS.md or CLAUDE.md of a module or package directory outside docs/ (at most ${MODULE_README_MAX_LINES} lines)`, ok: (p) => !p.startsWith("docs/") && p.includes("/") && /\/(?:README|AGENTS|CLAUDE)\.md$/u.test(p) },
+  module: { where: `a README.md, AGENTS.md or CLAUDE.md of a module or package directory outside docs/`, ok: (p) => !p.startsWith("docs/") && p.includes("/") && /\/(?:README|AGENTS|CLAUDE)\.md$/u.test(p) },
   pending: { where: "anywhere (until its cleanup verdict lands)", ok: () => true },
   ...EXTRA_TYPES,
 });
@@ -156,14 +154,6 @@ export function checkDocs({ files, index, archive = [], read, modules = MODULE_I
     if (modules ? doc.module !== "—" && !modules.has(doc.module) : !doc.module) errors.push(`${doc.at}: module "${doc.module}" is ${modules ? `not one of ${[...modules].join(", ")} (or — for none)` : "empty (name the module or —)"}`);
     if (!doc.what) errors.push(`${doc.at}: the What cell is empty`);
     if (doc.type === "pending") pending.push(doc);
-    if (doc.type === "module") {
-      const lines = read(doc.path).split(/\r?\n/u).length;
-      if (lines > MODULE_README_MAX_LINES) errors.push(`${doc.at}: ${doc.path} has ${lines} lines; a module README says what the directory is and links into docs/ (at most ${MODULE_README_MAX_LINES}); move the body to a docs/ type`);
-    }
-    if (doc.type === "charter") {
-      const lines = read(doc.path).split(/\r?\n/u).length;
-      if (lines > CHARTER_MAX_LINES) errors.push(`${doc.at}: ${doc.path} has ${lines} lines; a charter is one page (at most ${CHARTER_MAX_LINES}): purpose, layer, belongs / never, contracts, dependencies, rules`);
-    }
     if (doc.type === "reference") {
       const head = read(doc.path).split(/\r?\n/u).slice(0, 10).join("\n");
       const verified = LAST_VERIFIED.exec(head);
