@@ -14,6 +14,7 @@ require (
 	fyne.io/systray v1.12.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/netbirdio/netbird v0.82.0
+	github.com/pires/go-proxyproto v0.12.0
 	github.com/pkg/sftp v1.13.12
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/shirou/gopsutil/v4 v4.25.8
@@ -105,7 +106,6 @@ require (
 	github.com/pion/transport/v3 v3.1.1 // indirect
 	github.com/pion/turn/v3 v3.0.1 // indirect
 	github.com/pion/turn/v4 v4.1.1 // indirect
-	github.com/pires/go-proxyproto v0.12.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/prometheus/client_golang v1.23.2 // indirect

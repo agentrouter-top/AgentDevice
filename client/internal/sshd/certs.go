@@ -15,11 +15,10 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
-// Certificate logins (compute/v1 README §3; AgentCompute#179, owner 2026-11-11 「ssh用证书方案，按你推荐的来」): the SSH
-// credential is a short-lived OpenSSH user certificate AgentCompute's SSH user CA signs for one computer
-// (POST /v1/computers/{id}/access { publicKey }). AgentCompute's SSH gateway checks it before it forwards; this server is
-// the last hop and checks it again against the CA keys it was given. golang.org/x/crypto/ssh parses and verifies the
-// certificate (the library the gateway uses, ssh-gateway/internal/ca); the checks around it mirror the gateway's.
+// Certificate logins (compute/v1 README §3): the SSH gateway's own logins to this server (its endpoint edge, compute/v1
+// README §5) are short-lived OpenSSH user certificates AgentCompute's CA signs for one computer. A buyer never holds
+// one: it logs in with its own registered key, which the gateway vouches for (vouch.go). golang.org/x/crypto/ssh
+// parses and verifies the certificate (the library the gateway uses, ssh-gateway/internal/ca).
 
 // Extensions AgentCompute's CA writes (ssh-gateway/internal/ca): who the certificate acts for and the authorising token.
 const (
@@ -42,7 +41,7 @@ func (e *CertError) Error() string { return "ssh certificate refused (" + e.Chec
 
 // Caller is who authenticated a connection, for the session log and the activity log.
 type Caller struct {
-	Method string // certificate | token (the former password path, legacy_token.go)
+	Method string // key (a registered key the gateway vouched for) | certificate (the gateway's own logins)
 	Own    string
 	Sub    string
 	Run    string
@@ -50,6 +49,7 @@ type Caller struct {
 	Jti    string
 	Serial uint64 // certificate only
 	KeyID  string // certificate only: "<computer> own=… sub=… jti=…[ run=…][ dlg=…]"
+	Key    string // key only: its SHA256 fingerprint
 }
 
 // CAKeys is the set of SSH user CA public keys this computer trusts: more than one during a rotation (compute/v1
@@ -185,7 +185,7 @@ func (a *CertAuthority) Verify(ctx context.Context, cert *gossh.Certificate) (*C
 		return nil, &CertError{"critical-option", fmt.Sprintf("critical options %v are not taken here", names)}
 	}
 	if len(cert.ValidPrincipals) != 1 || cert.ValidPrincipals[0] != a.ComputerID {
-		return nil, &CertError{"principal", fmt.Sprintf("the certificate names principals %q; this computer is %s (POST /v1/computers/%s/access issues one for it)", cert.ValidPrincipals, a.ComputerID, a.ComputerID)}
+		return nil, &CertError{"principal", fmt.Sprintf("the certificate names principals %q; this computer is %s", cert.ValidPrincipals, a.ComputerID)}
 	}
 	// CheckCert checks the signature, validity and principal but not who signed (ssh.CertChecker.Authenticate does,
 	// but takes the login user as the principal; ours is the computer): the signer is checked here first.
@@ -207,7 +207,7 @@ func (a *CertAuthority) Verify(ctx context.Context, cert *gossh.Certificate) (*C
 	case int64(cert.ValidAfter) < 0 || now.Unix() < int64(cert.ValidAfter):
 		return nil, &CertError{"validity", fmt.Sprintf("valid from %s, now is %s (this computer's clock may be behind)", after.Format(time.RFC3339), now.UTC().Format(time.RFC3339))}
 	case int64(cert.ValidBefore) < 0 || now.Unix() >= int64(cert.ValidBefore):
-		return nil, &CertError{"validity", fmt.Sprintf("expired at %s, now is %s: ask POST /v1/computers/%s/access for a new one", before.Format(time.RFC3339), now.UTC().Format(time.RFC3339), a.ComputerID)}
+		return nil, &CertError{"validity", fmt.Sprintf("expired at %s, now is %s (this computer's clock may be ahead)", before.Format(time.RFC3339), now.UTC().Format(time.RFC3339))}
 	}
 	checker := &gossh.CertChecker{Clock: func() time.Time { return now }}
 	if err := checker.CheckCert(a.ComputerID, cert); err != nil {
@@ -226,16 +226,30 @@ func (a *CertAuthority) Verify(ctx context.Context, cert *gossh.Certificate) (*C
 
 type callerKey struct{}
 
-// publicKey authenticates with an AgentCompute SSH user certificate. The library asks for the proof that the client
-// holds the private key only after this accepted the key, so accepting here is not yet a login. The caller goes into
-// this key's own permissions (charm.land/ssh starts fresh ones per attempt and keeps those of the key that logged in),
-// so the session sees the certificate that authenticated, not the last one offered.
+// publicKey authenticates a connection: a plain key the SSH gateway vouched for on this connection (vouch.go: a
+// buyer's key registered on this computer), or an AgentCompute certificate (the gateway's own logins, its endpoint
+// edge). The library asks for the proof that the client holds the private key only after this accepted the key, so
+// accepting here is not yet a login. The caller goes into this key's own permissions (charm.land/ssh starts fresh ones
+// per attempt and keeps those of the key that logged in), so the session sees the key that authenticated, not the
+// last one offered.
 func (s *Server) publicKey(ctx ssh.Context, key ssh.PublicKey) bool {
 	cert, ok := key.(*gossh.Certificate)
 	if !ok {
-		s.cfg.Log.Info("ssh auth denied", "remote", ctx.RemoteAddr().String(), "user", ctx.User(), "method", "publickey", "check", "certificate",
-			"error", "a plain key; only certificates from POST /v1/computers/{id}/access log in with a key", "key", gossh.FingerprintSHA256(key))
-		return false
+		st, err := s.cfg.Certificates.verifyVouched(ctx, voucherOf(ctx), key)
+		if err != nil {
+			check := ""
+			var ve *VouchError
+			if errors.As(err, &ve) {
+				check = ve.Check
+			}
+			s.cfg.Log.Info("ssh auth denied", "remote", ctx.RemoteAddr().String(), "user", ctx.User(), "method", "key", "check", check,
+				"key", gossh.FingerprintSHA256(key), "error", err.Error())
+			return false
+		}
+		setCaller(ctx, &Caller{Method: "key", Own: s.cfg.Certificates.Own, Key: gossh.FingerprintSHA256(key)})
+		s.cfg.Log.Info("ssh key accepted", "remote", ctx.RemoteAddr().String(), "user", ctx.User(), "method", "key",
+			"key", gossh.FingerprintSHA256(key), "vouchedAt", time.Unix(st.At, 0).UTC().Format(time.RFC3339))
+		return true
 	}
 	c, err := s.cfg.Certificates.Verify(ctx, cert)
 	if err != nil {

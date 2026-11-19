@@ -180,7 +180,7 @@ func TestEnrolSendsTheContractRequestAndReadsTheEnrolment(t *testing.T) {
 // testCAKey is an authorized_keys line of an ed25519 key (the shape of compute/v1 sshUserCAKeys; a throwaway test key).
 const testCAKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBzyRbqajE55vH7MFrTXIcWIWPw67W6UwOxppjMI6hvm agentcompute-ssh-user-ca"
 
-// GET /v1/ssh-user-ca with the client's own token answers the trusted keys.
+// GET /v1/ssh-user-ca with the client's own token answers the trusted keys and the computer's host certificate.
 func TestSSHUserCA(t *testing.T) {
 	var gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -190,12 +190,12 @@ func TestSSHUserCA(t *testing.T) {
 		}
 		gotAuth = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"keys":[%q]}`, testCAKey)
+		fmt.Fprintf(w, `{"keys":[%q],"hostCertificate":"ssh-ed25519-cert-v01@openssh.com AAAA"}`, testCAKey)
 	}))
 	defer srv.Close()
-	keys, err := (&Client{BaseURL: srv.URL}).SSHUserCA(context.Background(), "tok")
-	if err != nil || len(keys) != 1 || keys[0] != testCAKey || gotAuth != "Bearer tok" {
-		t.Fatalf("keys %v err %v auth %q", keys, err, gotAuth)
+	trust, err := (&Client{BaseURL: srv.URL}).SSHUserCA(context.Background(), "tok")
+	if err != nil || len(trust.Keys) != 1 || trust.Keys[0] != testCAKey || trust.HostCertificate == "" || gotAuth != "Bearer tok" {
+		t.Fatalf("trust %v err %v auth %q", trust, err, gotAuth)
 	}
 }
 

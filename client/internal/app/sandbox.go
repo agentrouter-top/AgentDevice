@@ -21,20 +21,21 @@ const DefaultJoinFile = "/etc/agentcompute/network.json"
 
 // SandboxJoin is compute/v1 sandbox-join.schema.json: what a sandbox's client needs to come online without a person.
 type SandboxJoin struct {
-	Version            int    `json:"version,omitempty"`
-	Computer           string `json:"computer"`
-	Own                string `json:"own"`
-	Ten                string `json:"ten"`
-	Issuer             string `json:"issuer"`
-	ManagementURL      string `json:"managementUrl"`
-	DeviceName         string `json:"deviceName"`
-	SetupKey           string `json:"setupKey"`
-	HostKey            string `json:"hostKey"`
-	User               string `json:"user,omitempty"`
-	TokenMaxAgeSeconds int    `json:"tokenMaxAgeSeconds,omitempty"`
+	Version       int    `json:"version,omitempty"`
+	Computer      string `json:"computer"`
+	Own           string `json:"own"`
+	Ten           string `json:"ten"`
+	Issuer        string `json:"issuer"`
+	ManagementURL string `json:"managementUrl"`
+	DeviceName    string `json:"deviceName"`
+	SetupKey      string `json:"setupKey"`
+	HostKey       string `json:"hostKey"`
+	User          string `json:"user,omitempty"`
 	// SSHUserCAKeys are the SSH user CA's public keys the SSH server trusts (compute/v1 README §3).
 	SSHUserCAKeys []string `json:"sshUserCAKeys,omitempty"`
-	Proxy         *struct {
+	// HostCertificate is the CA's host certificate for HostKey (compute/v1 README §3).
+	HostCertificate string `json:"hostCertificate,omitempty"`
+	Proxy           *struct {
 		URL    string   `json:"url"`
 		Hosts  []string `json:"hosts"`
 		Listen string   `json:"listen,omitempty"`
@@ -76,7 +77,7 @@ func ReadSandboxJoin(path string) (*SandboxJoin, error) {
 }
 
 // PrepareSandbox writes the join file's identity into the client's folder: the host key, config.json's issuer and
-// token age, and device.json (a sandbox is enrolled by AgentCompute when it is created). It returns the join
+// device.json (a sandbox is enrolled by AgentCompute when it is created). It returns the join
 // credential (the one-use setup key).
 func (a *App) PrepareSandbox(j *SandboxJoin) (*compute.Join, error) {
 	if err := a.Dir.SetHostKey([]byte(j.HostKey)); err != nil {
@@ -84,9 +85,6 @@ func (a *App) PrepareSandbox(j *SandboxJoin) (*compute.Join, error) {
 	}
 	a.Cfg.Issuer = strings.TrimSuffix(j.Issuer, "/")
 	a.Cfg.JWKSURL = a.Cfg.Issuer + "/.well-known/jwks.json"
-	if j.TokenMaxAgeSeconds > 0 {
-		a.Cfg.TokenMaxAgeSeconds = j.TokenMaxAgeSeconds
-	}
 	dev, err := a.Dir.LoadDevice()
 	if err != nil {
 		return nil, err
@@ -105,6 +103,7 @@ func (a *App) PrepareSandbox(j *SandboxJoin) (*compute.Join, error) {
 	}
 	// The join file is this sandbox's source of the SSH user CA keys (it has no login for GET /v1/ssh-user-ca).
 	dev.SSHUserCAKeys = j.SSHUserCAKeys
+	dev.HostCertificate = j.HostCertificate
 	if err := a.Dir.SaveDevice(dev); err != nil {
 		return nil, err
 	}

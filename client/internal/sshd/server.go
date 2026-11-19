@@ -2,11 +2,13 @@
 // gliderlabs/ssh) with a real terminal (ConPTY through charmbracelet/x/conpty on Windows, a Unix PTY elsewhere),
 // pkg/sftp (BSD-2) in-process, and local port forwarding to services on this computer. It listens on the device's
 // NetBird address only. Every session runs as the account the client runs as, on the whole computer (R58): no user
-// switching, no administrator rights. A login is an AgentCompute SSH user certificate (certs.go); the former token
-// password (legacy_token.go) stays until AgentHost moved (AgentHost#385).
+// switching, no administrator rights. A login is a buyer's registered key the SSH gateway vouched for (vouch.go) or
+// the gateway's own certificate (certs.go). It presents an OpenSSH host certificate when it has one, so a buyer trusts
+// every computer with one known-hosts line (compute/v1 README §3).
 package sshd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -29,11 +31,12 @@ import (
 // Config is the server's setup.
 type Config struct {
 	HostKey gossh.Signer
-	// Certificates checks certificate logins (compute/v1 README §3).
+	// HostCertificate, when set, is the host certificate AgentCompute's CA signed for HostKey (an authorized_keys
+	// line): presented beside the plain key (a client that pins the plain key still finds it).
+	HostCertificate string
+	// Certificates checks logins (compute/v1 README §3): vouched keys and certificates, against the CA keys.
 	Certificates *CertAuthority
-	// Authorizer, when set, also takes the former token password. LEGACY: delete with legacy_token.go (AgentHost#385).
-	Authorizer *Authorizer
-	Shell      facts.UserShellInfo
+	Shell        facts.UserShellInfo
 	// BaseEnv is the environment commands start with (on Unix the account's login environment; see LoginEnv).
 	BaseEnv []string
 	// Home is where sessions and SFTP start.
@@ -80,15 +83,36 @@ func New(cfg Config) (*Server, error) {
 		},
 		SubsystemHandlers: map[string]ssh.SubsystemHandler{"sftp": s.handleSFTP},
 	}
-	if cfg.Authorizer != nil {
-		srv.PasswordHandler = s.legacyPassword // LEGACY (legacy_token.go)
-	}
+	srv.ConnCallback = s.readVoucher
 	srv.AddHostKey(cfg.HostKey)
+	if cfg.HostCertificate != "" {
+		certSigner, err := HostCertSigner(cfg.HostKey, cfg.HostCertificate)
+		if err != nil {
+			return nil, fmt.Errorf("sshd: %w", err)
+		}
+		srv.AddHostKey(certSigner)
+	}
 	if err := srv.SetOption(ssh.AllocatePty()); err != nil {
 		return nil, fmt.Errorf("sshd: %w", err)
 	}
 	s.srv = srv
 	return s, nil
+}
+
+// HostCertSigner is the host key with its certificate: an OpenSSH host certificate for exactly this key.
+func HostCertSigner(key gossh.Signer, line string) (gossh.Signer, error) {
+	pub, _, _, _, err := gossh.ParseAuthorizedKey([]byte(line))
+	if err != nil {
+		return nil, errors.New("the host certificate is not an OpenSSH certificate line")
+	}
+	cert, ok := pub.(*gossh.Certificate)
+	if !ok || cert.CertType != gossh.HostCert {
+		return nil, errors.New("the host certificate is not an OpenSSH host certificate")
+	}
+	if !bytes.Equal(cert.Key.Marshal(), key.PublicKey().Marshal()) {
+		return nil, fmt.Errorf("the host certificate is for %s, not this computer's host key %s", gossh.FingerprintSHA256(cert.Key), gossh.FingerprintSHA256(key.PublicKey()))
+	}
+	return gossh.NewCertSigner(cert, key)
 }
 
 // Serve accepts connections on ln until it fails or Close is called.

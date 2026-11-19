@@ -28,7 +28,10 @@ filtered standard token.
   **Superseded 2026-11-11** (owner on AgentCompute#179 「ssh用证书方案，按你推荐的来」; #253): a login is an OpenSSH user
   certificate of AgentCompute's SSH user CA (`client/internal/sshd/certs.go`, x/crypto/ssh): signer one of the
   trusted CA keys, one principal = this computer's id, valid now, no critical option, `own@` = the owner, `ten@` = the
-  tenant when known. The token password stays in `legacy_token.go` only until AgentHost moved (AgentHost#385).
+  tenant when known. The token password was deleted (AgentDevice#267).
+  **Superseded 2026-11-18** (owner: 「把这个10分钟的限制给拆掉」, AgentCompute#353): a buyer logs in with its own key,
+  registered on the computer; the gateway vouches for it per connection (`client/internal/sshd/vouch.go`), and
+  certificates remain the gateway's own logins (its endpoint edge). The server presents a host certificate.
 - Port forwarding: local (`direct-tcpip`) to the computer's own loopback services only, which is how a named endpoint
   reaches its program; no remote forwarding, no agent forwarding.
 - The host key is the client's (Ed25519, made at first start) and is reported at enrolment (`hostKey`, AgentCompute

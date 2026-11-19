@@ -209,17 +209,18 @@ func (a *App) enrol(ctx context.Context, tok, name, ten, deviceID string) (*comp
 		ten = en.Computer.Own
 	}
 	dev := &state.Device{
-		ComputerID:    en.Computer.ID,
-		Own:           en.Computer.Own,
-		Ten:           ten,
-		DeviceID:      deviceID,
-		Name:          en.Computer.Name,
-		ComputeURL:    a.computeURL,
-		ManagementURL: en.Network.ManagementURL,
-		PeerName:      en.Network.DeviceName,
-		JoinMethod:    en.Network.Join.Method,
-		EnrolledAt:    time.Now().UTC(),
-		SSHUserCAKeys: en.Network.SSHUserCAKeys,
+		ComputerID:      en.Computer.ID,
+		Own:             en.Computer.Own,
+		Ten:             ten,
+		DeviceID:        deviceID,
+		Name:            en.Computer.Name,
+		ComputeURL:      a.computeURL,
+		ManagementURL:   en.Network.ManagementURL,
+		PeerName:        en.Network.DeviceName,
+		JoinMethod:      en.Network.Join.Method,
+		EnrolledAt:      time.Now().UTC(),
+		SSHUserCAKeys:   en.Network.SSHUserCAKeys,
+		HostCertificate: en.Network.HostCertificate,
 	}
 	if dev.Name == "" {
 		dev.Name = name
@@ -377,30 +378,16 @@ func (a *App) run(ctx context.Context, stop context.CancelCauseFunc, join *compu
 	sh := facts.UserShell()
 	env := sshd.LoginEnv(ctx, sh, a.Self, a.BaseEnv)
 	home, _ := os.UserHomeDir()
-	cas := a.sshUserCA(ctx, dev)
-	// LEGACY: the token password (sshd/legacy_token.go) until AgentHost logs in with certificates (AgentHost#385,
-	// deletion tracked on AgentDevice#253): delete this verifier and the Authorizer below with it.
-	// A device without an issuer (one that joined with an enrolment code and has no environment file) takes
-	// certificates only.
-	var legacy *sshd.Authorizer
-	if a.Cfg.Issuer != "" {
-		legacy = &sshd.Authorizer{
-			Verifier:   &identity.Verifier{Issuer: a.Cfg.Issuer, Keys: &identity.RemoteKeys{URL: a.Cfg.JWKSURL}},
-			ComputerID: dev.ComputerID,
-			Own:        dev.Own,
-			Ten:        dev.Ten,
-			MaxAge:     time.Duration(a.Cfg.TokenMaxAgeSeconds) * time.Second,
-		}
-	}
+	cas, hostCert := a.sshTrust(ctx, dev)
 	srv, err := sshd.New(sshd.Config{
-		HostKey:      signer,
-		Certificates: &sshd.CertAuthority{Keys: cas, ComputerID: dev.ComputerID, Own: dev.Own, Ten: dev.Ten},
-		Authorizer:   legacy,
-		Shell:        sh,
-		BaseEnv:      env,
-		Home:         home,
-		Version:      a.Version,
-		Log:          a.Log.With("part", "sshd"),
+		HostKey:         signer,
+		HostCertificate: hostCert,
+		Certificates:    &sshd.CertAuthority{Keys: cas, ComputerID: dev.ComputerID, Own: dev.Own, Ten: dev.Ten},
+		Shell:           sh,
+		BaseEnv:         env,
+		Home:            home,
+		Version:         a.Version,
+		Log:             a.Log.With("part", "sshd"),
 		Activity: func(act sshd.Activity) {
 			say(a.Console, ActivityLine(act))
 		},
@@ -469,65 +456,82 @@ func (a *App) run(ctx context.Context, stop context.CancelCauseFunc, join *compu
 	return nil
 }
 
-// sshUserCA is the set of SSH user CA keys the SSH server trusts (compute/v1 README §3): those saved with the
-// enrolment (the enrolment answer, or a sandbox's join file), replaced at each start by the current ones. A device
-// reads them from compute/v1 GET /v1/ssh-user-ca with its own token (a failure keeps the saved keys); a sandbox has
-// no login, so it reads its join file again. The same source is asked again when a certificate names an unknown
-// signer (a CA rotation), at most once a minute.
-func (a *App) sshUserCA(ctx context.Context, dev *state.Device) *sshd.CAKeys {
+// sshTrust is what the SSH server trusts and presents (compute/v1 README §3): the CA keys (they sign the gateway's
+// statements and its certificates) and this computer's host certificate, those saved with the enrolment (the
+// enrolment answer, or a sandbox's join file), replaced at each start by the current ones. A device reads them from
+// compute/v1 GET /v1/ssh-user-ca with its own key (a failure keeps the saved ones); a sandbox has no login, so it
+// reads its join file again. The same source is asked again for the keys when nothing it knows verifies a statement
+// or a certificate (a CA rotation), at most once a minute.
+func (a *App) sshTrust(ctx context.Context, dev *state.Device) (*sshd.CAKeys, string) {
 	log := a.Log.With("part", "sshd")
-	cas := &sshd.CAKeys{Refresh: a.fetchSSHUserCA, MinInterval: time.Minute, Log: log}
+	cas := &sshd.CAKeys{Refresh: func(ctx context.Context) ([]string, error) {
+		t, err := a.fetchSSHTrust(ctx)
+		return t.Keys, err
+	}, MinInterval: time.Minute, Log: log}
 	if len(dev.SSHUserCAKeys) > 0 {
 		if err := cas.Set(dev.SSHUserCAKeys); err != nil {
-			log.Warn("ssh user CA: the saved keys are unusable", "error", err.Error())
+			log.Warn("ssh CA: the saved keys are unusable", "error", err.Error())
 		}
 	}
-	if !a.Headless {
-		fctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		keys, err := a.fetchSSHUserCA(fctx)
-		cancel()
-		if err == nil {
-			err = cas.Set(keys)
+	fctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	t, err := a.fetchSSHTrust(fctx)
+	cancel()
+	if err == nil {
+		err = cas.Set(t.Keys)
+	}
+	if err != nil {
+		log.Warn("ssh CA: reading the current keys failed; using the saved ones (asked again when nothing known verifies a login)", "saved", len(dev.SSHUserCAKeys), "error", err.Error())
+	} else if !slices.Equal(t.Keys, dev.SSHUserCAKeys) || (t.HostCertificate != "" && t.HostCertificate != dev.HostCertificate) {
+		dev.SSHUserCAKeys = t.Keys
+		if t.HostCertificate != "" {
+			dev.HostCertificate = t.HostCertificate
 		}
-		if err != nil {
-			log.Warn("ssh user CA: reading the current keys failed; using the saved ones (asked again when a certificate's signer is unknown)", "saved", len(dev.SSHUserCAKeys), "error", err.Error())
-		} else if !slices.Equal(keys, dev.SSHUserCAKeys) {
-			dev.SSHUserCAKeys = keys
-			if err := a.Dir.SaveDevice(dev); err != nil {
-				log.Warn("ssh user CA: could not save the current keys", "error", err.Error())
-			}
+		if err := a.Dir.SaveDevice(dev); err != nil {
+			log.Warn("ssh CA: could not save the current keys", "error", err.Error())
 		}
 	}
 	fps := cas.Fingerprints()
 	if len(fps) == 0 {
-		log.Warn("ssh user CA: no trusted keys yet; certificate logins are refused until they are read", "computer", dev.ComputerID)
+		log.Warn("ssh CA: no trusted keys yet; logins are refused until they are read", "computer", dev.ComputerID)
 	} else {
-		log.Info("ssh user CA: trusted keys", "keys", strings.Join(fps, ","))
+		log.Info("ssh CA: trusted keys", "keys", strings.Join(fps, ","))
 	}
-	return cas
+	hostCert := dev.HostCertificate
+	if hostCert != "" {
+		if signer, _, err := a.Dir.HostKey(); err == nil {
+			if _, err := sshd.HostCertSigner(signer, hostCert); err != nil {
+				log.Warn("ssh host certificate unusable; presenting the plain host key only (ssh <computer id> then fails its host check)", "error", err.Error())
+				hostCert = ""
+			}
+		}
+	} else {
+		log.Warn("ssh host certificate: none yet; presenting the plain host key only (ssh <computer id> fails its host check until compute/v1 answers one)", "computer", dev.ComputerID)
+	}
+	return cas, hostCert
 }
 
-// fetchSSHUserCA reads the current SSH user CA keys: a sandbox's join file, or compute/v1 GET /v1/ssh-user-ca.
-func (a *App) fetchSSHUserCA(ctx context.Context) ([]string, error) {
+// fetchSSHTrust reads the current CA keys and host certificate: a sandbox's join file, or compute/v1
+// GET /v1/ssh-user-ca.
+func (a *App) fetchSSHTrust(ctx context.Context) (compute.SSHTrust, error) {
 	if a.Headless {
 		if a.joinFile == "" {
-			return nil, errors.New("ssh user CA: this sandbox's join file is not known")
+			return compute.SSHTrust{}, errors.New("ssh CA: this sandbox's join file is not known")
 		}
 		j, err := ReadSandboxJoin(a.joinFile)
 		if err != nil {
-			return nil, err
+			return compute.SSHTrust{}, err
 		}
-		return j.SSHUserCAKeys, nil
+		return compute.SSHTrust{Keys: j.SSHUserCAKeys, HostCertificate: j.HostCertificate}, nil
 	}
 	tok, err := a.computeToken(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("ssh user CA: %w", err)
+		return compute.SSHTrust{}, fmt.Errorf("ssh CA: %w", err)
 	}
-	keys, err := a.computeClient().SSHUserCA(ctx, tok)
+	t, err := a.computeClient().SSHUserCA(ctx, tok)
 	if err != nil {
-		return nil, fmt.Errorf("ssh user CA: %w", err)
+		return compute.SSHTrust{}, fmt.Errorf("ssh CA: %w", err)
 	}
-	return keys, nil
+	return t, nil
 }
 
 // watchUpdates tells the person, in the window and the log, when a newer release exists (release/README.md

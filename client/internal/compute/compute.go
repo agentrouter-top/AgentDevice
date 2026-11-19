@@ -53,8 +53,11 @@ type Network struct {
 	ManagementURL string `json:"managementUrl"`
 	DeviceName    string `json:"deviceName,omitempty"`
 	Join          Join   `json:"join"`
-	// SSHUserCAKeys are the SSH user CA's public keys (authorized_keys lines) this computer's SSH server trusts.
+	// SSHUserCAKeys are the CA's public keys (authorized_keys lines) this computer's SSH server trusts: they sign the
+	// gateway's statements for registered keys and its certificates (compute/v1 README §3).
 	SSHUserCAKeys []string `json:"sshUserCAKeys,omitempty"`
+	// HostCertificate is the OpenSSH host certificate the CA signed for this computer's host key (principal: its id).
+	HostCertificate string `json:"hostCertificate,omitempty"`
 }
 
 // Enrolment is device.schema.json $defs/enrolment.
@@ -248,16 +251,20 @@ func (c *Client) ReportFacts(ctx context.Context, token, id string, f facts.Fact
 	return c.do(ctx, http.MethodPut, "/v1/computers/"+id+"/facts", token, nil, f, nil)
 }
 
-// SSHUserCA is GET /v1/ssh-user-ca (scope computer:*:report): the SSH user CA's public keys a computer's SSH server
-// trusts (authorized_keys lines; more than one during a rotation).
-func (c *Client) SSHUserCA(ctx context.Context, token string) ([]string, error) {
-	var out struct {
-		Keys []string `json:"keys"`
-	}
+// SSHTrust is GET /v1/ssh-user-ca's answer: the CA keys a computer's SSH server trusts (authorized_keys lines; more
+// than one during a rotation) and the caller's own host certificate.
+type SSHTrust struct {
+	Keys            []string `json:"keys"`
+	HostCertificate string   `json:"hostCertificate,omitempty"`
+}
+
+// SSHUserCA is GET /v1/ssh-user-ca (scope computer:*:report): what a computer's SSH server trusts and presents.
+func (c *Client) SSHUserCA(ctx context.Context, token string) (SSHTrust, error) {
+	var out SSHTrust
 	if err := c.do(ctx, http.MethodGet, "/v1/ssh-user-ca", token, nil, nil, &out); err != nil {
-		return nil, err
+		return SSHTrust{}, err
 	}
-	return out.Keys, nil
+	return out, nil
 }
 
 // Unbind is DELETE /v1/devices/{id} (scope computer:<id>:manage): the NetBird peer is deleted.
