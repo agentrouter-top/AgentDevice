@@ -103,9 +103,6 @@ type Config struct {
 	ClientID       string `json:"clientId,omitempty"`
 	// SSHPort is where the SSH server listens on the device's NetBird address (default 22; compute/v1 access target).
 	SSHPort int `json:"sshPort,omitempty"`
-	// TokenMaxAgeSeconds is how old (now - iat) an SSH token may be when it authenticates (default 600, compute/v1
-	// access tokenMaxAgeSeconds).
-	TokenMaxAgeSeconds int `json:"tokenMaxAgeSeconds,omitempty"`
 }
 
 // Zitadel is the ZITADEL instance and the agentdevice application the person logs in with.
@@ -162,9 +159,6 @@ func (d Dir) LoadConfig() (Config, error) {
 	if c.SSHPort == 0 {
 		c.SSHPort = 22
 	}
-	if c.TokenMaxAgeSeconds == 0 {
-		c.TokenMaxAgeSeconds = 600
-	}
 	return c, nil
 }
 
@@ -214,6 +208,9 @@ type Device struct {
 	// SSHUserCAKeys are the SSH user CA keys the SSH server trusts (compute/v1 sshUserCAKeys): from the enrolment
 	// answer or the join file, replaced by GET /v1/ssh-user-ca at each start.
 	SSHUserCAKeys []string `json:"sshUserCAKeys,omitempty"`
+	// HostCertificate is the CA's host certificate for this computer's host key: from the enrolment answer or the
+	// join file, replaced by GET /v1/ssh-user-ca at each start.
+	HostCertificate string `json:"hostCertificate,omitempty"`
 }
 
 // LoadDevice reads device.json; nil, nil when the device is not enrolled.

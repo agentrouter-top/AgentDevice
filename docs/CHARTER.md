@@ -9,8 +9,8 @@ until the base cutover, which retires them.
 
 **Belongs here**: embedding NetBird `client/embed` (BSD-3, pinned release): userspace networking, no admin rights, no
 driver; it joins the owner's NetBird network on our self-hosted management. Our own SSH server on the NetBird address
-(ADR 0002: shell, commands, SFTP, loopback forwarding, Windows included); logins by AgentCompute's SSH user
-certificates (compute/v1 §3; the token password only until AgentHost#385). Enrolment with an AgentCompute enrolment
+(ADR 0002: shell, commands, SFTP, loopback forwarding, Windows included); logins by a buyer's registered key the
+SSH gateway vouches for, or the gateway's own certificate (compute/v1 §3). Enrolment with an AgentCompute enrolment
 code (`join <code>`: no login, the device keeps only its own device key, #259); the old path: our login (device
 code to the person's NewAPI account). Device name, tray, autostart, logout (= the peer is removed), updates, per-OS
 release builds (signing deferred, ADR 0001). Honest `facts` (OS, architecture, shell, CPU / memory / GPU, installed

@@ -21,12 +21,14 @@ Please report vulnerabilities privately through GitHub's "Report a vulnerability
 ## Design summary
 
 The client joins its owner's private, self-hosted NetBird network in userspace (no administrator rights, no driver)
-and serves SSH only on its NetBird address: no port on the computer's own network. Every SSH session authenticates
-with a 10-minute OpenSSH user certificate of AgentCompute's SSH user CA (signer one of the trusted CA keys, one
-principal = this computer's id, valid now, no critical option, `own@` = the device's owner), checked by AgentCompute's
-SSH gateway and again on the device; the CA keys come with the enrolment or the join file and are read again at each
-start (`GET /v1/ssh-user-ca`) and on an unknown signer. The former token password (`aud: netbird`) stays only until
-AgentHost moved to certificates (AgentHost#385). A device that joined with an enrolment code (`agentdevice join`)
+and serves SSH only on its NetBird address: no port on the computer's own network. A buyer logs in with its own key,
+registered on this computer at the store: AgentCompute's SSH gateway checks the registration for every connection it
+forwards and vouches for that one key in a PROXY protocol v2 header signed by one of AgentCompute's CA keys (for this
+computer, made within two minutes); the device takes a plain key only so. The gateway's own logins (its endpoint
+edge) are short-lived OpenSSH user certificates of the same CA (one principal = this computer's id, valid now, no
+critical option, `own@` = the device's owner). The device presents an OpenSSH host certificate of that CA for its host
+key. The CA keys and the host certificate come with the enrolment or the join file and are read again at each start
+(`GET /v1/ssh-user-ca`); the keys also when nothing known verifies a login. No password is taken. A device that joined with an enrolment code (`agentdevice join`)
 holds no login and no account credential: the code works once and for minutes, and what stays on the device is its
 own device key (an owner-only file), which reports this computer's facts and can remove this computer, nothing else
 of the account; removing the device ends the key. The device only executes:

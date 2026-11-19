@@ -112,7 +112,7 @@ func TestSandboxJoinFromTheProvidersFile(t *testing.T) {
 	if !a.Headless || join == nil || join.Method != "setup-key" || join.SetupKey != "TEST-SETUP-KEY" {
 		t.Fatalf("join %+v headless %v", join, a.Headless)
 	}
-	if a.Cfg.Issuer != "https://newapi.test" || a.Cfg.JWKSURL != "https://newapi.test/.well-known/jwks.json" || a.Cfg.TokenMaxAgeSeconds != 600 {
+	if a.Cfg.Issuer != "https://newapi.test" || a.Cfg.JWKSURL != "https://newapi.test/.well-known/jwks.json" {
 		t.Fatalf("config %+v", a.Cfg)
 	}
 	dev, _ := dir.LoadDevice()
@@ -128,12 +128,12 @@ func TestSandboxJoinFromTheProvidersFile(t *testing.T) {
 	if err := os.WriteFile(j.path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if keys, err := a.fetchSSHUserCA(context.Background()); err != nil || len(keys) != 2 {
-		t.Fatalf("re-reading the join file: %v %v", keys, err)
+	if trust, err := a.fetchSSHTrust(context.Background()); err != nil || len(trust.Keys) != 2 {
+		t.Fatalf("re-reading the join file: %v %v", trust, err)
 	}
-	cas := a.sshUserCA(context.Background(), dev)
-	if len(cas.Fingerprints()) != 1 {
-		t.Fatalf("trusted at start: %v (the saved keys)", cas.Fingerprints())
+	cas, _ := a.sshTrust(context.Background(), dev)
+	if len(cas.Fingerprints()) != 2 {
+		t.Fatalf("trusted at start: %v (the join file's keys)", cas.Fingerprints())
 	}
 	signer, _, err := dir.HostKey()
 	if err != nil {
